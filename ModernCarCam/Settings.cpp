@@ -2,6 +2,8 @@
 
 #include <vector>
 #include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 // ---------------------------------------------------------------------------
 // Settings.cpp - settings state and ini parsing.
@@ -67,6 +69,12 @@ bool smoothSideView = false;
 // to on in San Andreas (how SA behaves) and off in III/VC, where the keyboard
 // keeps its vanilla look-left/right/behind and sub-mission meaning.
 bool keyboardFreeLook = false;
+
+// ---- GTA III top-down camera enhancements ----
+bool topDownEnhance = false;
+float topDownDistance = -1.0f;      // < 0: use the scale instead
+float topDownDistanceScale = 1.0f;
+float topDownClearance = 0.0f;      // height above the car to scan for a ceiling; 0 = off
 
 // [Offsets] - applied independently of the selected profile.
 float cameraHeightOffset = 0.0f;
@@ -622,6 +630,19 @@ void LoadSettings()
 	ReadBool("BikesHeightIncrease", heightIncreaseOnBike);
 	ReadBool("SmoothSideView", smoothSideView);
 	ReadBool("KeyboardFreeLook", keyboardFreeLook);
+
+	// [TopDown] - GTA III top-down camera enhancements.
+	{
+		auto ReadTD = [&](const char* key, float def) -> float {
+			char buf[64];
+			ReadTrimmed("TopDown", key, buf, sizeof(buf));
+			return buf[0] ? (float)atof(buf) : def;
+		};
+		topDownEnhance = ReadTD("Enhance", topDownEnhance ? 1.0f : 0.0f) != 0.0f;
+		topDownDistance = ReadTD("Distance", topDownDistance);
+		topDownDistanceScale = ReadTD("DistanceScale", topDownDistanceScale);
+		topDownClearance = ReadTD("Clearance", topDownClearance);
+	}
 
 	// Inverted relative to the internal "see underwater" flag.
 	int keepWater = ReadSwitch("KeepCameraOverWater");

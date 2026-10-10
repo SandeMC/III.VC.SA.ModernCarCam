@@ -144,6 +144,17 @@ extern bool enhancedVC;                    // Enhanced uses Vice City's features
 extern bool smoothSideView;                 // smooth side view: look left/right/behind swings smoothly instead of the vanilla instant change
 extern bool keyboardFreeLook;               // let the game's keyboard look/turret keys (numpad) drive the free camera; on by default in SA, off in III/VC
 
+// ---- GTA III top-down camera enhancements (stacked on the game's own camera) ----
+// GTA III's MODE_TOPDOWN / MODE_GTACLASSIC, post-processed so the distance can be
+// tuned and so a ceiling above the car can drop the view to first person. The
+// game's own top-down logic stays in charge; this only nudges the finished pose.
+extern bool topDownEnhance;        // enable the GTA III top-down post-process
+extern float topDownDistance;      // if > 0, absolute horizontal distance from the car
+extern float topDownDistanceScale; // otherwise, distance scale
+extern float topDownClearance;     // height above the car to scan for a ceiling; 0 disables the first-person fallback
+
+void InitVanillaCameraEnhanceHooks(void);
+
 // [Offsets] - camera offsets, applied independently of the selected profile.
 extern float cameraHeightOffset;           // extra height in metres added to the camera target
 extern float cameraLateralOffset;          // side offset of the camera

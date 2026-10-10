@@ -378,6 +378,62 @@ static void OverrideWidescreenFixOptions(void)
 // ---------------------------------------------------------------------------
 // DllMain: detect the running game and install the hooks.
 // ---------------------------------------------------------------------------
+// GTA III top-down camera enhancement (stacking).
+//
+// Wraps the game's own CCam::Process and post-processes the pose its MODE_TOPDOWN
+// / MODE_GTACLASSIC camera produced: the distance can be scaled or overridden, and
+// a ceiling above the car drops the view to first person. The vanilla top-down
+// logic stays in charge; nothing here reimplements it.
+// ---------------------------------------------------------------------------
+typedef int(__thiscall *CCamProcessFn)(void*);
+
+static CCamProcessFn origCCamProcessIII = (CCamProcessFn)0x4596A0;
+
+int __fastcall CCamProcessHookIII(void* thisptr, void*)
+{
+	const int result = origCCamProcessIII(thisptr);
+	if (topDownEnhance) {
+		CCamIII* cam = (CCamIII*)thisptr;
+		if (cam->Mode == 1 || cam->Mode == 2) { // MODE_TOPDOWN / MODE_GTACLASSIC
+			CVector target = cam->CamTargetEntity ? cam->CamTargetEntity->GetPosition() : cam->m_cvecTargetCoorsForFudgeInter;
+			CVector delta = cam->Source - target;
+
+			// Distance: scale the whole car-to-camera vector so the view direction is
+			// untouched and the frame does not jump.
+			if (topDownDistance > 0.0f) {
+				CVector horiz(delta.x, delta.y, 0.0f);
+				const float hl = horiz.Magnitude();
+				if (hl > 0.001f)
+					delta *= (topDownDistance / hl);
+			} else {
+				delta *= topDownDistanceScale;
+			}
+			cam->Source = target + delta;
+
+			// A ceiling above the car drops the view to first person when Clearance > 0.
+			if (topDownClearance > 0.0f) {
+				const CVector above = target + CVector(0.0f, 0.0f, topDownClearance);
+				if (!CWorldIII::GetIsLineOfSightClear(target, above, true, false, false, true, false, false, false)) {
+					cam->Mode = 16; // MODE_1STPERSON
+					cam->Source = target + CVector(0.0f, 0.0f, 0.6f);
+					cam->Front = cam->CamTargetEntity ? cam->CamTargetEntity->GetForward() : CVector(0.0f, 1.0f, 0.0f);
+					cam->Up = CVector(0.0f, 0.0f, 1.0f);
+				}
+			}
+		}
+	}
+	return result;
+}
+
+void InitVanillaCameraEnhanceHooks(void)
+{
+	if (isIII()) {
+		InjectHook(0x46d5ff, &CCamProcessHookIII, PATCH_NOTHING);
+		InjectHook(0x46d7a0, &CCamProcessHookIII, PATCH_NOTHING);
+	}
+}
+
+// ---------------------------------------------------------------------------
 BOOL WINAPI
 DllMain(HINSTANCE hInst, DWORD reason, LPVOID)
 {
@@ -477,6 +533,9 @@ DllMain(HINSTANCE hInst, DWORD reason, LPVOID)
 			// hooks are not installed on SA; those address/pad-internals differ.
 		}
 		else return FALSE;
+
+		// Stack the GTA III top-down enhancement onto the game's own camera.
+		InitVanillaCameraEnhanceHooks();
 
 		// III/VC register the menu from their debug-text-buffer init. SA has no
 		// reversed debug-menu call site, so its startup call in WinMain is used
