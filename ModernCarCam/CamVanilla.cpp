@@ -1035,11 +1035,19 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 		static float modLookBetaSpeed = 0.0f;
 		static bool modLookReturning = false;
 		static bool modLookOwnsBeta = false;
+		// Look radius, captured once when the look starts (from the follow camera's
+		// own distance). It must not be re-read from the camera position each frame:
+		// the collision below moves the camera, which would shrink the distance and
+		// make the side view creep towards the car.
+		static float vcLookDist = -1.0f;
+		static float vcLookClipLen = -1.0f;
 		if (cam->ResetStatics) {
 			modLookBeta = 0.0f;
 			modLookBetaSpeed = 0.0f;
 			modLookReturning = false;
 			modLookOwnsBeta = false;
+			vcLookDist = -1.0f;
+			vcLookClipLen = -1.0f;
 		}
 		// If the player starts free-looking during the return, abandon the return
 		// immediately and let the mouse own Beta (otherwise the two fight until the
@@ -1053,12 +1061,16 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 		const bool wantLook = smoothSideView && (lookNow != 0 || modLookReturning);
 		if (wantLook && !modLookOwnsBeta) {
 			// Seed the accumulator from the current camera angle so the swing starts
-			// smoothly from wherever the camera is.
+			// smoothly from wherever the camera is, and take the follow camera's
+			// distance as the look radius for this whole look.
 			modLookBeta = cam->Beta;
 			modLookBetaSpeed = 0.0f;
 			modLookOwnsBeta = true;
+			vcLookDist = stringLength;
 		} else if (!wantLook) {
 			modLookOwnsBeta = false;
+			vcLookDist = -1.0f;
+			vcLookClipLen = -1.0f;
 		}
 		modLookActive = wantLook;
 		if (modLookActive) {
@@ -1091,13 +1103,15 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 				modLookBetaSpeed = 0.0f;
 				modLookActive = false;
 				modLookOwnsBeta = false;
+				vcLookDist = -1.0f;
+				vcLookClipLen = -1.0f;
 			}
-			// Use the follow camera's own distance (the clamped string length)
-			// instead of CA_MAX_DISTANCE, and pin the pitch to the follow value.
-			// That keeps the side view on the same radius and height as the normal
-			// camera, so engaging the look does not lift the view, and neither the
-			// swing nor the collision below can move it vertically.
-			float lookDist = stringLength;
+			// Use the radius captured when the look started (the follow camera's
+			// own distance) and pin the pitch to the follow value. That keeps the
+			// side view on the same radius and height as the normal camera, so
+			// engaging the look does not lift or zoom the view, and the collision
+			// below cannot feed back into the distance.
+			float lookDist = (vcLookDist > 0.0f) ? vcLookDist : stringLength;
 			if (lookDist < cam->CA_MIN_DISTANCE)
 				lookDist = cam->CA_MIN_DISTANCE;
 			cam->Alpha = modLookAlphaHold;
@@ -1111,7 +1125,6 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 			// flickers as it swings cannot snap the view. The follow collision
 			// below is skipped during a look, so this is the only clamp it gets.
 			{
-				static float vcLookClipLen = -1.0f;
 				CVector dir = cam->Source - TargetCoors;
 				const float fullLen = dir.Magnitude();
 				if (fullLen > 0.05f) {
