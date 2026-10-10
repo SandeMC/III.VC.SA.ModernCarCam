@@ -1040,14 +1040,12 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 		// the collision below moves the camera, which would shrink the distance and
 		// make the side view creep towards the car.
 		static float vcLookDist = -1.0f;
-		static float vcLookClipLen = -1.0f;
 		if (cam->ResetStatics) {
 			modLookBeta = 0.0f;
 			modLookBetaSpeed = 0.0f;
 			modLookReturning = false;
 			modLookOwnsBeta = false;
 			vcLookDist = -1.0f;
-			vcLookClipLen = -1.0f;
 		}
 		// If the player starts free-looking during the return, abandon the return
 		// immediately and let the mouse own Beta (otherwise the two fight until the
@@ -1070,7 +1068,6 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 		} else if (!wantLook) {
 			modLookOwnsBeta = false;
 			vcLookDist = -1.0f;
-			vcLookClipLen = -1.0f;
 		}
 		modLookActive = wantLook;
 		if (modLookActive) {
@@ -1104,7 +1101,6 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 				modLookActive = false;
 				modLookOwnsBeta = false;
 				vcLookDist = -1.0f;
-				vcLookClipLen = -1.0f;
 			}
 			// Use the radius captured when the look started (the follow camera's
 			// own distance) and pin the pitch to the follow value. That keeps the
@@ -1118,33 +1114,9 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 			cam->Source.x = TargetCoors.x - cosf(cam->Beta) * lookDist;
 			cam->Source.y = TargetCoors.y - sinf(cam->Beta) * lookDist;
 			cam->Source.z = TargetCoors.z + sinf(cam->Alpha + AlphaOffset) * lookDist + cam->m_fCloseInCarHeightOffset;
-			// Pull the look camera in if its line to the car is blocked, so it
-			// stops just short of the wall. The whole line is checked (not just the
-			// horizontal one) so an overhang or canopy above the side view is
-			// caught too; the camera recedes along that line, damped so a hit that
-			// flickers as it swings cannot snap the view. The follow collision
-			// below is skipped during a look, so this is the only clamp it gets.
-			{
-				CVector dir = cam->Source - TargetCoors;
-				const float fullLen = dir.Magnitude();
-				if (fullLen > 0.05f) {
-					dir *= (1.0f / fullLen);
-					float allowed = fullLen;
-					pIgnoreEntity = (CEntity*)car;
-					CColPoint lookCol;
-					CEntity* lookHit = nil;
-					if (WorldClass::ProcessLineOfSight(TargetCoors, cam->Source, lookCol, lookHit, true, false, false, true, false, false, true))
-						allowed = max(0.5f, (lookCol.point - TargetCoors).Magnitude() - 0.35f);
-					pIgnoreEntity = nil;
-					if (vcLookClipLen < 0.0f)
-						vcLookClipLen = allowed;
-					else if (allowed < vcLookClipLen)
-						vcLookClipLen += (allowed - vcLookClipLen) * min(1.0f, ms_fTimeStep * 0.6f);
-					else
-						vcLookClipLen += (allowed - vcLookClipLen) * min(1.0f, ms_fTimeStep * 0.12f);
-					cam->Source = TargetCoors + dir * vcLookClipLen;
-				}
-			}
+			// The follow collision below clamps this position out of geometry. It
+			// now runs during a look too: the look owns Beta (in modLookBeta), so
+			// the clamp can no longer warp the look angle the way it did before.
 			// Publish the look into the cam flags the drive-by reads (the native
 			// look would normally set these, but it is bypassed while smooth side
 			// view is on). Publish the aim only when this camera is the active one;
@@ -1186,10 +1158,11 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	}
 
 	// ---- Keep the camera out of geometry ----
-	// Skipped during a mod-driven look: the look gets its own pull-in clamp in
-	// the look block above, and this one feeds the string length, which would
-	// fight the look the way the general SA follow collision does.
-	if (!modLookActive) {
+	// Runs for the follow camera and for a mod-driven look alike: it clamps the
+	// placed position out of geometry along the car-to-camera line. The look owns
+	// Beta (in modLookBeta) and its radius is captured when it starts, so the
+	// clamp can no longer warp the look angle or feed back into the distance.
+	{
 		pIgnoreEntity = (CEntity*)car;
 		CColPoint colPoint;
 		CEntity* hitEntity = nil;
