@@ -39,6 +39,43 @@ int gtaversion = -1;
 // isVC() also returns true for Re:LCS.
 bool isReLCS = false;
 
+// ---- First-person mod compatibility ----
+bool firstPersonModCompat = false;
+// The 12 bytes SA's CCam::Process uses to clear Cams[ActiveCam].LookingBehind/
+// Left/Right (normally NOPed so the mod's published drive-by flags survive).
+static unsigned char saLookingClearBytes[12];
+static bool saLookingClearSaved = false;
+
+UltFP_IsFirstPerson_t pUltFP_IsFirstPerson = nullptr;
+
+void CheckFirstPersonModCompat(void)
+{
+	static int checked = 0;
+	if (checked)
+		return;
+	checked = 1;
+
+	// ASIs load in an order we do not control, so this runs on the first camera
+	// frame, once everything is in memory.
+	HMODULE h = GetModuleHandleA("UltimateFP_SA.asi");
+	if (!h) {
+		ModuleList mods;
+		const auto loaded = mods.GetAllByPrefix(L"Ultimate");
+		if (!loaded.empty())
+			h = loaded[0];
+	}
+	if (h != nullptr) {
+		pUltFP_IsFirstPerson = (UltFP_IsFirstPerson_t)GetProcAddress(h, "UltimateFP_IsFirstPerson");
+		if (pUltFP_IsFirstPerson != nullptr) {
+			firstPersonModCompat = true;
+			// Give the game's own drive-by look-flag clear back; UltimateFP has
+			// its own drive-by support, so the mod does not need to hold them.
+			if (saLookingClearSaved)
+				memcpy((void*)0x527DC9, saLookingClearBytes, 12);
+		}
+	}
+}
+
 DebugMenuAPI gDebugMenuAPI;
 
 // -----
@@ -526,7 +563,10 @@ DllMain(HINSTANCE hInst, DWORD reason, LPVOID)
 			// Drive-by: CCam::Process clears Cams[ActiveCam].LookingBehind/Left/
 			// Right at 0x527DC9 (right after our engine runs) and SA's native look
 			// -- which we suppress via gCameraDirection -- is what normally sets
-			// them again. Our engine publishes those flags, so stop the clear.
+			// them again. Our engine publishes those flags, so stop the clear. The
+			// original bytes are saved so a first-person mod can have the clear back.
+			memcpy(saLookingClearBytes, (void*)0x527DC9, 12);
+			saLookingClearSaved = true;
 			Nop(0x527DC9, 12);
 
 			// Note: the III/VC BetterDriveBy and FakeCarGun(UpDown/LeftRight)

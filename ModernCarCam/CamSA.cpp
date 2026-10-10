@@ -102,6 +102,22 @@ template<class CamClass, class CameraClass, class VehicleClass, class WorldClass
 void
 Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, const CVector& CameraTarget, float TargetOrientation)
 {
+	// Detect a first-person camera mod once, on the first frame (ASIs may load
+	// after us), and back off the parts that fight it while it is in first person.
+	if (isSA())
+		CheckFirstPersonModCompat();
+	const bool fpActive = isSA() && firstPersonModCompat &&
+		pUltFP_IsFirstPerson != nullptr && pUltFP_IsFirstPerson();
+
+	// If this engine bails out before it republishes the drive-by look flags
+	// (e.g. the camera target is no longer a vehicle), clear them first: with the
+	// game's own clear NOPed at 0x527DC9, a stale flag would lock the view.
+	if (cam) {
+		cam->LookingBehind = false;
+		cam->LookingLeft = false;
+		cam->LookingRight = false;
+	}
+
 	// Persistent camera state the vanilla CCam keeps as members; the mod engine
 	// has to hold it in static locals instead.
 	static CVector m_aTargetHistoryPosOne;
@@ -177,9 +193,11 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// Look behind is the vehicle look-behind only; the on-foot look-behind
 	// (GetLookBehindForPed) shares the pad's right-stick click with the
 	// sub-mission / hide-landing-gear key, so it must never drive the car camera.
-	const bool lookBehindCar = pad->GetLookBehindForCar();
-	const bool lookLeftKey = pad->GetLookLeft();
-	const bool lookRightKey = pad->GetLookRight();
+	// While a first-person mod owns the look, read no look input: its own head
+	// look drives the view, and the mod's side view / drive-by would fight it.
+	const bool lookBehindCar = !fpActive && pad->GetLookBehindForCar();
+	const bool lookLeftKey = !fpActive && pad->GetLookLeft();
+	const bool lookRightKey = !fpActive && pad->GetLookRight();
 	// Helicopters and the RC Baron yaw with the look-left/right keys, so their
 	// side look stays off (vanilla does the same in CCam::Process).
 	const bool disableSideLook = DisableVehicleSideLook(car->m_modelIndex, isHeli);
@@ -187,7 +205,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 
 	// True while the follow camera is in control: no look input is held and it
 	// was already looking forward.
-	uint8 nextDirectionIsForward = !anyLookInput &&
+	uint8 nextDirectionIsForward = !fpActive && !anyLookInput &&
 		cam->DirectionWasLooking == LOOKING_FORWARD;
 
 	if (distanceProfile == PROFILE_LCS && car->m_modelIndex == FireTruk) {
@@ -1211,10 +1229,14 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	}
 	// Publish the aim only when this vehicle camera is the active one; while a
 	// manual drive-by has taken the camera to a ped/aim mode, leave the aim alone.
-	const bool pedAimCamera = IsPedAimCameraMode(cam->Mode);
-	cam->LookingBehind = pedAimCamera ? false : lockBehind;
-	cam->LookingLeft = pedAimCamera ? false : lockLeft;
-	cam->LookingRight = pedAimCamera ? false : lockRight;
+	// Skipped entirely while a first-person mod owns the look, so the two do not
+	// fight over the drive-by flags.
+	if (!fpActive) {
+		const bool pedAimCamera = IsPedAimCameraMode(cam->Mode);
+		cam->LookingBehind = pedAimCamera ? false : lockBehind;
+		cam->LookingLeft = pedAimCamera ? false : lockLeft;
+		cam->LookingRight = pedAimCamera ? false : lockRight;
+	}
 
 	cam->Front.x = -(cos(cam->Beta) * cos(cam->Alpha));
 	cam->Front.y = -(sin(cam->Beta) * cos(cam->Alpha));

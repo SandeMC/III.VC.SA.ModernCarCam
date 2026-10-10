@@ -155,6 +155,16 @@ extern float topDownClearance;     // height above the car to scan for a ceiling
 
 void InitVanillaCameraEnhanceHooks(void);
 
+// ---- First-person mod compatibility (e.g. Ultimate First Person) ----
+// A first-person camera mod drives the vehicle camera look itself. When one is
+// loaded the mod stops publishing the drive-by look flags (and stops suppressing
+// the game's own clearing of them), so the two no longer fight over the view.
+// Everything else (wobble, shake, FOV, side view, free-look) is kept.
+extern bool firstPersonModCompat;
+typedef bool(__cdecl* UltFP_IsFirstPerson_t)();
+extern UltFP_IsFirstPerson_t pUltFP_IsFirstPerson;
+void CheckFirstPersonModCompat(void);
+
 // [Offsets] - camera offsets, applied independently of the selected profile.
 extern float cameraHeightOffset;           // extra height in metres added to the camera target
 extern float cameraLateralOffset;          // side offset of the camera
