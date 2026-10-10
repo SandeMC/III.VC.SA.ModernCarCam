@@ -1092,21 +1092,30 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 			const float lookDist = cam->CA_MAX_DISTANCE;
 			cam->Source.x = TargetCoors.x - cosf(cam->Beta) * lookDist;
 			cam->Source.y = TargetCoors.y - sinf(cam->Beta) * lookDist;
-			// Pull the look camera in along its ray if the side is blocked, so it
-			// stops just short of the wall instead of clipping through it. The
-			// follow collision below is skipped during the look, so this is the
-			// only clamp the look camera gets.
+			// Pull the look camera in if the side is blocked, so it stops just
+			// short of the wall instead of clipping through it. The check is
+			// horizontal at the camera's height and only x/y are changed, so the
+			// view never jumps up or down. The follow collision below is skipped
+			// during a look, so this is the only clamp the look camera gets.
 			{
-				pIgnoreEntity = (CEntity*)car;
-				CColPoint lookCol;
-				CEntity* lookHit = nil;
-				if (WorldClass::ProcessLineOfSight(TargetCoors, cam->Source, lookCol, lookHit, true, false, false, true, false, false, true)) {
-					CVector dir = cam->Source - TargetCoors;
-					const float len = dir.Magnitude();
-					if (len > 0.05f)
-						cam->Source = lookCol.point - (dir * (1.0f / len)) * 0.35f;
+				CVector origin = TargetCoors;
+				origin.z = cam->Source.z;
+				CVector dir = cam->Source - origin;
+				dir.z = 0.0f;
+				const float fullLen = dir.Magnitude();
+				if (fullLen > 0.05f) {
+					dir *= (1.0f / fullLen);
+					pIgnoreEntity = (CEntity*)car;
+					CColPoint lookCol;
+					CEntity* lookHit = nil;
+					if (WorldClass::ProcessLineOfSight(origin, cam->Source, lookCol, lookHit, true, false, false, true, false, false, true)) {
+						const float allowed = max(0.5f, (lookCol.point - origin).Magnitude() - 0.35f);
+						const float use = min(allowed, fullLen);
+						cam->Source.x = origin.x + dir.x * use;
+						cam->Source.y = origin.y + dir.y * use;
+					}
+					pIgnoreEntity = nil;
 				}
-				pIgnoreEntity = nil;
 			}
 			// Publish the look into the cam flags the drive-by reads (the native
 			// look would normally set these, but it is bypassed while smooth side
