@@ -1045,6 +1045,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 			alphaSpeedFromStickY += (targetAlpha - cam->Alpha) * 0.075f;
 	}
 
+	const float alphaBeforeLook = cam->Alpha;
 	cam->AlphaSpeed = angleChangeStepLeft * alphaSpeedFromStickY + angleChangeStep * cam->AlphaSpeed;
 	float maxAlphaSpeed = v117;
 	if (alphaSpeedFromStickY > 0.0f)
@@ -1074,6 +1075,15 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	{
 		alphaWithSpeedAccounted = ms_fTimeStep * cam->AlphaSpeed + targetAlpha;
 		cam->Alpha += targetAlphaBlendAmount * freeLookReturnScale;
+	}
+
+	// A look only swings Beta; keep the follow camera's pitch (Alpha) so the view
+	// does not climb into ceiling geometry while looking to the side. The vanilla
+	// side look keeps the pitch; maxAlphaAllowed depends on Beta, which is what
+	// dragged the pitch around here.
+	if (lookState != 0) {
+		cam->Alpha = alphaBeforeLook;
+		cam->AlphaSpeed = 0.0f;
 	}
 
 	if (cam->Alpha <= maxAlphaAllowed)
@@ -1361,17 +1371,31 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// of geometry by pulling it in along the look ray so it stops just short of
 	// the wall. The general follow collision below is skipped during a look: its
 	// distance and near-clip changes and sphere nudges made the view jump around.
+	// The clip distance is eased (pulls in fast, lets out slowly) so a hit that
+	// flickers as the camera swings does not snap the view.
+	static float lookClipLen = -1.0f;
 	if (lookState != 0) {
-		CColPoint lookCol;
-		CEntity* lookEnt = nil;
-		pIgnoreEntity = (CEntity*)cam->CamTargetEntity;
-		if (WorldClass::ProcessLineOfSight(TargetCoors, cam->Source, lookCol, lookEnt, true, false, false, true, false, true, false)) {
-			CVector dir = cam->Source - TargetCoors;
-			const float len = dir.Magnitude();
-			if (len > 0.05f)
-				cam->Source = lookCol.point - (dir * (1.0f / len)) * 0.35f;
+		CVector dir = cam->Source - TargetCoors;
+		const float fullLen = dir.Magnitude();
+		if (fullLen > 0.05f) {
+			dir *= (1.0f / fullLen);
+			float allowed = fullLen;
+			CColPoint lookCol;
+			CEntity* lookEnt = nil;
+			pIgnoreEntity = (CEntity*)cam->CamTargetEntity;
+			if (WorldClass::ProcessLineOfSight(TargetCoors, cam->Source, lookCol, lookEnt, true, false, false, true, false, true, false))
+				allowed = max(0.6f, (lookCol.point - TargetCoors).Magnitude() - 0.35f);
+			pIgnoreEntity = nil;
+			if (lookClipLen < 0.0f)
+				lookClipLen = allowed;                                                     // engage: snap
+			else if (allowed < lookClipLen)
+				lookClipLen += (allowed - lookClipLen) * min(1.0f, ms_fTimeStep * 0.6f);    // pull in fast
+			else
+				lookClipLen += (allowed - lookClipLen) * min(1.0f, ms_fTimeStep * 0.12f);   // let out slow
+			cam->Source = TargetCoors + dir * lookClipLen;
 		}
-		pIgnoreEntity = nil;
+	} else {
+		lookClipLen = -1.0f;
 	}
 
 	// GTA IV-style over-the-shoulder side offset.
