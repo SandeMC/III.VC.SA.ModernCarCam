@@ -1133,9 +1133,11 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	}
 
 	// ---- Keep the camera out of geometry ----
-	// Skipped during a mod-driven look: reVC's look already places the camera and
-	// the string engine's own pull would drag it in and warp the look angle.
-	if (!modLookActive) {
+	// This runs during a mod-driven look too: the clamp only moves the camera
+	// along the car-to-camera ray, and Beta is owned by the look accumulator, so
+	// it can no longer warp the look angle. Skipping it let the side view clip
+	// straight through walls.
+	{
 		pIgnoreEntity = (CEntity*)car;
 		CColPoint colPoint;
 		CEntity* hitEntity = nil;
@@ -1146,8 +1148,9 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 
 	// ---- Keep a little clearance above the ground and pull the near plane in ----
 	// Without this, resting the camera on the ground lets the near clip plane
-	// cut into it. SA shrinks the near clip plane in the same situation.
-	if (mouseChangesBeta) {
+	// cut into it. SA shrinks the near clip plane in the same situation. Runs
+	// during a mod-driven look too, so the side view cannot dip into the ground.
+	if (mouseChangesBeta || modLookActive) {
 		bool foundGround = false;
 		const float groundZ = WorldClass::FindGroundZFor3DCoord(cam->Source.x, cam->Source.y, TargetCoors.z + 2.0f, &foundGround);
 		if (foundGround) {

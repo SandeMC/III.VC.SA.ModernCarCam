@@ -1360,8 +1360,10 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 
 	// SA runs SetColVarsVehicle here, which cannot be called safely from the mod,
 	// so the LCS FollowCar / SA FollowPedWithMouse collision detection is used
-	// instead.
-	if (nextDirectionIsForward) {
+	// instead. It also runs while the look (side view / look behind) owns the
+	// camera, since a held look key clears nextDirectionIsForward; otherwise the
+	// side view would clip straight through walls.
+	if (nextDirectionIsForward || lookState != 0) {
 		// Move the camera out of any collision.
 		float v206 = powf(0.99, ms_fTimeStep);
 		flt_9BF250 = (v206 * flt_9BF250) + ((1.0f - v206) * car->m_vecMoveSpeed.Magnitude());
