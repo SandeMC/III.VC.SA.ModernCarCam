@@ -738,6 +738,10 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 		}
 	}
 
+	// Pitch before the height/pitch pass eases it. A smooth side view holds this
+	// pitch, so the view does not climb or dip as the camera swings to the side.
+	const float modLookAlphaHold = cam->Alpha;
+
 	// ---- Camera height / pitch (WorkOutCamHeight) ----
 	{
 		const CVector forward = car->GetForward();
@@ -1089,9 +1093,14 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 				modLookOwnsBeta = false;
 			}
 			// reVC uses CA_MAX_DISTANCE for the look, not the current string length.
+			// The pitch and the height are pinned to the follow value/distance so
+			// the swing and the collision below cannot move the camera vertically
+			// (the height pass at the top computes z from the previous distance).
 			const float lookDist = cam->CA_MAX_DISTANCE;
+			cam->Alpha = modLookAlphaHold;
 			cam->Source.x = TargetCoors.x - cosf(cam->Beta) * lookDist;
 			cam->Source.y = TargetCoors.y - sinf(cam->Beta) * lookDist;
+			cam->Source.z = TargetCoors.z + sinf(cam->Alpha + AlphaOffset) * lookDist + cam->m_fCloseInCarHeightOffset;
 			// Pull the look camera in if the side is blocked, so it stops just
 			// short of the wall instead of clipping through it. The check is
 			// horizontal at the camera's height and only x/y are changed, so the
