@@ -1092,11 +1092,14 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 				modLookActive = false;
 				modLookOwnsBeta = false;
 			}
-			// reVC uses CA_MAX_DISTANCE for the look, not the current string length.
-			// The pitch and the height are pinned to the follow value/distance so
-			// the swing and the collision below cannot move the camera vertically
-			// (the height pass at the top computes z from the previous distance).
-			const float lookDist = cam->CA_MAX_DISTANCE;
+			// Use the follow camera's own distance (the clamped string length)
+			// instead of CA_MAX_DISTANCE, and pin the pitch to the follow value.
+			// That keeps the side view on the same radius and height as the normal
+			// camera, so engaging the look does not lift the view, and neither the
+			// swing nor the collision below can move it vertically.
+			float lookDist = stringLength;
+			if (lookDist < cam->CA_MIN_DISTANCE)
+				lookDist = cam->CA_MIN_DISTANCE;
 			cam->Alpha = modLookAlphaHold;
 			cam->Source.x = TargetCoors.x - cosf(cam->Beta) * lookDist;
 			cam->Source.y = TargetCoors.y - sinf(cam->Beta) * lookDist;
