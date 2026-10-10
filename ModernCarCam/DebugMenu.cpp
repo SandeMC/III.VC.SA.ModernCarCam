@@ -1,6 +1,7 @@
 #include "common.h"
 #include "debugmenu_public.h"
 #include "ModernCarCam.h"
+#include <stdio.h>
 
 // ---------------------------------------------------------------------------
 // DebugMenu.cpp - the ModernCarCam section of aap's debug menu.
@@ -168,6 +169,12 @@ void registerDebugMenuEntries(void)
 	DebugMenuAddVar("ModernCarCam|Offsets", "Driver offset X", &cameraDriverOffset.x, nil, 0.05f, -3.0f, 3.0f);
 	DebugMenuAddVar("ModernCarCam|Offsets", "Driver offset Y", &cameraDriverOffset.y, nil, 0.05f, -3.0f, 3.0f);
 	DebugMenuAddVar("ModernCarCam|Offsets", "Driver offset Z", &cameraDriverOffset.z, nil, 0.05f, -3.0f, 3.0f);
+
+	// --- GTA III top-down camera enhancement ---
+	DebugMenuAddVarBool8("ModernCarCam|Top-down", "Enhance top-down", (int8*)&topDownEnhance, nil);
+	DebugMenuAddVar("ModernCarCam|Top-down", "Distance", &topDownDistance, nil, 0.5f, -1.0f, 60.0f);
+	DebugMenuAddVar("ModernCarCam|Top-down", "Distance scale", &topDownDistanceScale, nil, 0.05f, 0.1f, 4.0f);
+	DebugMenuAddVar("ModernCarCam|Top-down", "Clearance (m)", &topDownClearance, nil, 0.5f, 0.0f, 60.0f);
 
 	// --- Custom camera shape (Profile = Custom) ---
 	DebugMenuAddVar("ModernCarCam|Custom camera", "Distance near (m)", &customDistNear,

@@ -165,6 +165,7 @@ void applyProfile(ModernProfile profile, bool vc) {
 	lockShootDirJOY = true;
 	smoothSideView = false;            // vanilla instant look; Enhanced enables the smooth side view
 	keyboardFreeLook = sa;             // keyboard drives the free camera in SA (native), not in III/VC
+	topDownEnhance = false;            // the GTA III top-down enhancement is opt-in
 	mouseFreeLook = true;
 	heightIncreaseOnBike = vc;
 	fixTheBug = true;
