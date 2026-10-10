@@ -1357,6 +1357,23 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 
 	cam->Source = TargetCoors - newDistance * cam->Front;
 
+	// While a look (smooth side view / look behind) owns the camera, keep it out
+	// of geometry by pulling it in along the look ray so it stops just short of
+	// the wall. The general follow collision below is skipped during a look: its
+	// distance and near-clip changes and sphere nudges made the view jump around.
+	if (lookState != 0) {
+		CColPoint lookCol;
+		CEntity* lookEnt = nil;
+		pIgnoreEntity = (CEntity*)cam->CamTargetEntity;
+		if (WorldClass::ProcessLineOfSight(TargetCoors, cam->Source, lookCol, lookEnt, true, false, false, true, false, true, false)) {
+			CVector dir = cam->Source - TargetCoors;
+			const float len = dir.Magnitude();
+			if (len > 0.05f)
+				cam->Source = lookCol.point - (dir * (1.0f / len)) * 0.35f;
+		}
+		pIgnoreEntity = nil;
+	}
+
 	// GTA IV-style over-the-shoulder side offset.
 	if (cameraLateralOffset != 0.0f) {
 		CVector side = CrossProduct(car->GetForward(), CVector(0.0f, 0.0f, 1.0f));
@@ -1382,10 +1399,10 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 
 	// SA runs SetColVarsVehicle here, which cannot be called safely from the mod,
 	// so the LCS FollowCar / SA FollowPedWithMouse collision detection is used
-	// instead. It also runs while the look (side view / look behind) owns the
-	// camera, since a held look key clears nextDirectionIsForward; otherwise the
-	// side view would clip straight through walls.
-	if (nextDirectionIsForward || lookState != 0) {
+	// instead. It is for the follow camera only: while a look owns the camera the
+	// distance, near-clip and sphere nudges below would fight it, so the look gets
+	// its own pull-in collision above instead.
+	if (nextDirectionIsForward) {
 		// Move the camera out of any collision.
 		float v206 = powf(0.99, ms_fTimeStep);
 		flt_9BF250 = (v206 * flt_9BF250) + ((1.0f - v206) * car->m_vecMoveSpeed.Magnitude());

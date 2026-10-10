@@ -1092,6 +1092,22 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 			const float lookDist = cam->CA_MAX_DISTANCE;
 			cam->Source.x = TargetCoors.x - cosf(cam->Beta) * lookDist;
 			cam->Source.y = TargetCoors.y - sinf(cam->Beta) * lookDist;
+			// Pull the look camera in along its ray if the side is blocked, so it
+			// stops just short of the wall instead of clipping through it. The
+			// follow collision below is skipped during the look, so this is the
+			// only clamp the look camera gets.
+			{
+				pIgnoreEntity = (CEntity*)car;
+				CColPoint lookCol;
+				CEntity* lookHit = nil;
+				if (WorldClass::ProcessLineOfSight(TargetCoors, cam->Source, lookCol, lookHit, true, false, false, true, false, false, true)) {
+					CVector dir = cam->Source - TargetCoors;
+					const float len = dir.Magnitude();
+					if (len > 0.05f)
+						cam->Source = lookCol.point - (dir * (1.0f / len)) * 0.35f;
+				}
+				pIgnoreEntity = nil;
+			}
 			// Publish the look into the cam flags the drive-by reads (the native
 			// look would normally set these, but it is bypassed while smooth side
 			// view is on). Publish the aim only when this camera is the active one;
@@ -1133,11 +1149,10 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	}
 
 	// ---- Keep the camera out of geometry ----
-	// This runs during a mod-driven look too: the clamp only moves the camera
-	// along the car-to-camera ray, and Beta is owned by the look accumulator, so
-	// it can no longer warp the look angle. Skipping it let the side view clip
-	// straight through walls.
-	{
+	// Skipped during a mod-driven look: the look gets its own pull-in clamp in
+	// the look block above, and this one feeds the string length, which would
+	// fight the look the way the general SA follow collision does.
+	if (!modLookActive) {
 		pIgnoreEntity = (CEntity*)car;
 		CColPoint colPoint;
 		CEntity* hitEntity = nil;
