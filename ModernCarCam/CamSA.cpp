@@ -1379,16 +1379,13 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// distance and near-clip changes and sphere nudges made the view jump around.
 	// The clip distance is eased (pulls in fast, lets out slowly) so a hit that
 	// flickers as the camera swings does not snap the view.
-	// The check is horizontal, at the camera's own height, and the pull-in only
-	// moves the camera in x/y: z is left untouched so the collision never drags
-	// the view up or down. The clip distance is eased (pulls in fast, lets out
-	// slowly) so a hit that flickers as the camera swings cannot snap the view.
+	// Check the whole car-to-camera line (not just the horizontal one) so an
+	// overhang or canopy above the side view is caught too. The camera recedes
+	// along that line, damped so a hit that flickers while the camera swings
+	// cannot snap the view.
 	static float lookClipLen = -1.0f;
 	if (lookState != 0) {
-		CVector origin = TargetCoors;
-		origin.z = cam->Source.z;
-		CVector dir = cam->Source - origin;
-		dir.z = 0.0f;
+		CVector dir = cam->Source - TargetCoors;
 		const float fullLen = dir.Magnitude();
 		if (fullLen > 0.05f) {
 			dir *= (1.0f / fullLen);
@@ -1396,8 +1393,8 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 			CColPoint lookCol;
 			CEntity* lookEnt = nil;
 			pIgnoreEntity = (CEntity*)cam->CamTargetEntity;
-			if (WorldClass::ProcessLineOfSight(origin, cam->Source, lookCol, lookEnt, true, false, false, true, false, true, false))
-				allowed = max(0.6f, (lookCol.point - origin).Magnitude() - 0.35f);
+			if (WorldClass::ProcessLineOfSight(TargetCoors, cam->Source, lookCol, lookEnt, true, false, false, true, false, true, false))
+				allowed = max(0.6f, (lookCol.point - TargetCoors).Magnitude() - 0.35f);
 			pIgnoreEntity = nil;
 			if (lookClipLen < 0.0f)
 				lookClipLen = allowed;                                                     // engage: snap
@@ -1405,8 +1402,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 				lookClipLen += (allowed - lookClipLen) * min(1.0f, ms_fTimeStep * 0.6f);    // pull in fast
 			else
 				lookClipLen += (allowed - lookClipLen) * min(1.0f, ms_fTimeStep * 0.12f);   // let out slow
-			cam->Source.x = origin.x + dir.x * lookClipLen;
-			cam->Source.y = origin.y + dir.y * lookClipLen;
+			cam->Source = TargetCoors + dir * lookClipLen;
 		}
 	} else {
 		lookClipLen = -1.0f;

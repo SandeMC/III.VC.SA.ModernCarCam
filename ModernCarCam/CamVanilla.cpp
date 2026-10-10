@@ -1104,29 +1104,32 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 			cam->Source.x = TargetCoors.x - cosf(cam->Beta) * lookDist;
 			cam->Source.y = TargetCoors.y - sinf(cam->Beta) * lookDist;
 			cam->Source.z = TargetCoors.z + sinf(cam->Alpha + AlphaOffset) * lookDist + cam->m_fCloseInCarHeightOffset;
-			// Pull the look camera in if the side is blocked, so it stops just
-			// short of the wall instead of clipping through it. The check is
-			// horizontal at the camera's height and only x/y are changed, so the
-			// view never jumps up or down. The follow collision below is skipped
-			// during a look, so this is the only clamp the look camera gets.
+			// Pull the look camera in if its line to the car is blocked, so it
+			// stops just short of the wall. The whole line is checked (not just the
+			// horizontal one) so an overhang or canopy above the side view is
+			// caught too; the camera recedes along that line, damped so a hit that
+			// flickers as it swings cannot snap the view. The follow collision
+			// below is skipped during a look, so this is the only clamp it gets.
 			{
-				CVector origin = TargetCoors;
-				origin.z = cam->Source.z;
-				CVector dir = cam->Source - origin;
-				dir.z = 0.0f;
+				static float vcLookClipLen = -1.0f;
+				CVector dir = cam->Source - TargetCoors;
 				const float fullLen = dir.Magnitude();
 				if (fullLen > 0.05f) {
 					dir *= (1.0f / fullLen);
+					float allowed = fullLen;
 					pIgnoreEntity = (CEntity*)car;
 					CColPoint lookCol;
 					CEntity* lookHit = nil;
-					if (WorldClass::ProcessLineOfSight(origin, cam->Source, lookCol, lookHit, true, false, false, true, false, false, true)) {
-						const float allowed = max(0.5f, (lookCol.point - origin).Magnitude() - 0.35f);
-						const float use = min(allowed, fullLen);
-						cam->Source.x = origin.x + dir.x * use;
-						cam->Source.y = origin.y + dir.y * use;
-					}
+					if (WorldClass::ProcessLineOfSight(TargetCoors, cam->Source, lookCol, lookHit, true, false, false, true, false, false, true))
+						allowed = max(0.5f, (lookCol.point - TargetCoors).Magnitude() - 0.35f);
 					pIgnoreEntity = nil;
+					if (vcLookClipLen < 0.0f)
+						vcLookClipLen = allowed;
+					else if (allowed < vcLookClipLen)
+						vcLookClipLen += (allowed - vcLookClipLen) * min(1.0f, ms_fTimeStep * 0.6f);
+					else
+						vcLookClipLen += (allowed - vcLookClipLen) * min(1.0f, ms_fTimeStep * 0.12f);
+					cam->Source = TargetCoors + dir * vcLookClipLen;
 				}
 			}
 			// Publish the look into the cam flags the drive-by reads (the native
