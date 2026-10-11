@@ -240,7 +240,6 @@ void applyProfile(ModernProfile profile, bool vc) {
 			cameraAnchoring = 1.0f;    // authentic III/VC rigid anchor
 			cameraStiffness = 1.0f;    // authentic vanilla stiffness
 			reverseCam = true;
-			reverseCamDelay = 0.25f;   // Enhanced swings sooner than the 0.5s default
 			enhancedVC = true;
 		}
 		break;
