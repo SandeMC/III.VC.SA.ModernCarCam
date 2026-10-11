@@ -173,7 +173,7 @@ void applyProfile(ModernProfile profile, bool vc) {
 	trafficCamWobbleMinSpeed = 0.15f;  // forward speed (m/tick) needed to trigger a pass-by nudge
 	trafficCamWobbleFullSpeed = 0.5f;  // speed at which the nudge reaches its max multiplier
 	trafficCamWobbleMaxMultiplier = 2.0f; // nudge strength at full speed (before TrafficCamWobble)
-	reverseCamDelay = 0.25f;           // seconds of reversing before the reverse camera swings
+	reverseCamDelay = 0.5f;            // seconds of reversing before the reverse camera swings
 	dynamicSpeedFOVDecay = 0.98f;      // per-step FOV decay (Enhanced/SA feel)
 	reverseCam = false;                // quality-of-life: Enhanced only, or forced in the ini
 	seeUnderwater = false;
@@ -240,6 +240,7 @@ void applyProfile(ModernProfile profile, bool vc) {
 			cameraAnchoring = 1.0f;    // authentic III/VC rigid anchor
 			cameraStiffness = 1.0f;    // authentic vanilla stiffness
 			reverseCam = true;
+			reverseCamDelay = 0.25f;   // Enhanced swings sooner than the 0.5s default
 			enhancedVC = true;
 		}
 		break;
