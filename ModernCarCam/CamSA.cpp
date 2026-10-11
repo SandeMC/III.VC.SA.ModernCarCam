@@ -26,6 +26,14 @@ inline bool MouseSteeringDisabled() {
 	return m_bDisableMouseSteering;
 }
 
+// SA's "Fly with mouse" option. When on, the mouse flies the aircraft, so the
+// free camera look must not also read it there.
+inline bool MouseFlyingEnabled() {
+	if (isSA())
+		return *(bool*)0xC1CC03; // CVehicle::m_bEnableMouseFlying
+	return false;
+}
+
 // San Andreas vehicles whose special feature (a moving part) is driven by the
 // same right-stick axes the vehicle camera reads. The numpad keys (2/4/6/8,
 // Del, End) are bound to VEHICLE_TURRET* and PED_1RST_PERSON_LOOK_*, which map
@@ -195,12 +203,13 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// sub-mission / hide-landing-gear key, so it must never drive the car camera.
 	// While a first-person mod owns the look, read no look input: its own head
 	// look drives the view, and the mod's side view / drive-by would fight it.
-	const bool lookBehindCar = !fpActive && pad->GetLookBehindForCar();
-	const bool lookLeftKey = !fpActive && pad->GetLookLeft();
-	const bool lookRightKey = !fpActive && pad->GetLookRight();
-	// Helicopters and the RC Baron yaw with the look-left/right keys, so their
-	// side look stays off (vanilla does the same in CCam::Process).
-	const bool disableSideLook = DisableVehicleSideLook(car->m_modelIndex, isHeli);
+	// Helicopters, planes and the RC Baron yaw/rudder with these keys too, so the
+	// mod reads no look input (side view, free-look or look-behind) on them at all.
+	const bool disableSideLook = DisableVehicleSideLook(car->m_modelIndex, isHeli, isPlane);
+	const bool lookCamInput = !fpActive && !disableSideLook;
+	const bool lookBehindCar = lookCamInput && pad->GetLookBehindForCar();
+	const bool lookLeftKey = lookCamInput && pad->GetLookLeft();
+	const bool lookRightKey = lookCamInput && pad->GetLookRight();
 	const bool anyLookInput = lookBehindCar || lookLeftKey || lookRightKey;
 
 	// True while the follow camera is in control: no look input is held and it
@@ -830,6 +839,11 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 		stickY = 0.0f;
 	}
 
+	// On aircraft (helicopters, planes, the RC Baron) the look-left/right keys
+	// yaw/rudder the vehicle, so they must not drive the free camera there either.
+	if (disableSideLook && (pad->GetLookLeft() || pad->GetLookRight()))
+		stickX = 0.0f;
+
 	// SA gates this on m_bUseMouse3rdPerson so num2/num8 do not move the camera
 	// with Keyboard & Mouse controls; checking the actual pad state works better
 	// with GInput. On SA the vertical axis is always read, so the pad can look up
@@ -918,7 +932,12 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// Free look is native to SA, so it runs there even when the mod's toggle is
 	// off. It is disabled during a drive-by, matching SA, whose original mouse
 	// handling there is buggy.
-	if ((mouseFreeLook || isSA()) && m_bUseMouse3rdPerson && !GetDisablePlayerControls(pad) && nextDirectionIsForward)
+	// The free camera look stays available on aircraft (it is what the ini's
+	// MouseFreeLook enables); only the look *keys* are ignored for aircraft, since
+	// those are the yaw/rudder. nextDirectionIsForward already drops the free look
+	// while a look key is held.
+	if ((mouseFreeLook || isSA()) && m_bUseMouse3rdPerson && !GetDisablePlayerControls(pad) && nextDirectionIsForward &&
+	    !(disableSideLook && MouseFlyingEnabled()))
 	{
 		float mouseY = GetMouseControllerY() * 2.0f;
 		float mouseX = GetMouseControllerX() * -2.0f;
@@ -954,7 +973,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// instead of through SA's damped speed blending, which fights the player.
 	// This runs after the mouse block so a stick push is not cancelled by the
 	// mouse hold from the previous frame.
-	if ((mouseFreeLook || isSA()) && stickActive && !GetDisablePlayerControls(pad) && nextDirectionIsForward && !specialFeatureVehicle) {
+	if ((mouseFreeLook || isSA()) && stickActive && !GetDisablePlayerControls(pad) && nextDirectionIsForward && !specialFeatureVehicle && !disableSideLook) {
 		xMovement = fabsf(stickX) * (v103 * 0.071428575f) * stickX * 0.007f * 0.007f;
 		yMovement = fabsf(stickY) * (v103 * 0.042857144f) * stickY * 0.007f * 0.007f;
 		cam->BetaSpeed = 0.0f;
@@ -1216,7 +1235,10 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// the car (not only while a look key is held), like the III/VC lookingRelatively*.
 	// The fire truck is excluded: its fire button sprays water and the sideways
 	// weapon aim would make it shoot the gun instead.
-	if (modernDriveBy && !IsFireTruk(car)) {
+	// Aircraft have no drive-by, and publishing the look flag there makes the
+	// game's own camera swing to the side as the aircraft yaws (the flag latches
+	// because 0x527DC9 is NOPed), so skip it for them.
+	if (modernDriveBy && !IsFireTruk(car) && !disableSideLook) {
 		const CVector relFwd = Multiply3x3(cam->Front, car->GetMatrix());
 		const float relH = relFwd.Heading();
 		if (relH >= 0.5235987756f && relH <= 2.617993878f)        // > 30 and < 150 deg
@@ -1245,9 +1267,9 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	}
 	// Publish the aim only when this vehicle camera is the active one; while a
 	// manual drive-by has taken the camera to a ped/aim mode, leave the aim alone.
-	// Skipped entirely while a first-person mod owns the look, so the two do not
-	// fight over the drive-by flags.
-	if (!fpActive) {
+	// Skipped entirely while a first-person mod owns the look, or on aircraft
+	// (which have no drive-by), so nothing fights over the drive-by flags.
+	if (!fpActive && !disableSideLook) {
 		const bool pedAimCamera = IsPedAimCameraMode(cam->Mode);
 		cam->LookingBehind = pedAimCamera ? false : lockBehind;
 		cam->LookingLeft = pedAimCamera ? false : lockLeft;

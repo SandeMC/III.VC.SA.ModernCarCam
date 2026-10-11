@@ -377,12 +377,31 @@ extern bool lookingRelativelyRight;
 #define RcGoblin (isReLCS ? MI_RELCS_RCGOBLIN : MI_VC_RCGOBLIN)
 #define RcRaider (isReLCS ? MI_RELCS_RCRAIDER : MI_VC_RCRAIDER)
 
+// SA aircraft model IDs (vehicles.ide). The eVehicleType-based check is the
+// primary one, but the model list is a reliable fallback in case the type field
+// is not what we expect, so aircraft are never treated as cars.
+inline bool IsSAAircraftModel(int modelIndex) {
+	switch (modelIndex) {
+	case 592: case 577: case 511: case 512: case 593: case 520: case 553: // planes
+	case 476: case 519: case 460: case 513:
+	case 548: case 425: case 417: case 487: case 488: case 497: case 563: // helicopters
+	case 447: case 469:
+	case 464: case 465: case 501:                                          // RC Baron / Raider / Goblin
+		return true;
+	default:
+		return false;
+	}
+}
+
 // Vanilla CCam::Process disables the vehicle look-left/right keys for
 // helicopters and the RC Baron (their yaw keys share the same controls). The
 // mod's side view and free-look have to mirror that, otherwise turning one of
-// those vehicles swings the camera aside.
-inline bool DisableVehicleSideLook(int modelIndex, bool isHeli) {
-	if (isHeli)
+// those vehicles swings the camera aside. Aircraft yaw/rudder on the same keys
+// too, so planes are included.
+inline bool DisableVehicleSideLook(int modelIndex, bool isHeli, bool isPlane) {
+	if (isHeli || isPlane)
+		return true;
+	if (isSA() && IsSAAircraftModel(modelIndex))
 		return true;
 	if (isVC())
 		return modelIndex == MI_VC_RCBARON;

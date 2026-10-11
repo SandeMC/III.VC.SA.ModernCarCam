@@ -368,7 +368,7 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	// Helicopters and the RC Baron yaw with the look-left/right keys, so their
 	// side look must stay off in every game (vanilla does the same in
 	// CCam::Process).
-	const bool disableSideLook = DisableVehicleSideLook(car->m_modelIndex, isHeli);
+	const bool disableSideLook = DisableVehicleSideLook(car->m_modelIndex, isHeli, isPlane);
 
 	ColModelClass* carCol = (ColModelClass*)car->GetColModel();
 	if (!carCol)
@@ -587,7 +587,7 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	// left/right; both: Turret/Lean up/down), so reading it gives the keyboard
 	// free-look for free, driven exactly like the right stick. III/VC have no
 	// free camera of their own, so the vertical axis is no longer zeroed out.
-	if (mouseFreeLook && !GetDisablePlayerControls(pad) && nextDirectionIsForward) {
+	if (mouseFreeLook && !GetDisablePlayerControls(pad) && nextDirectionIsForward && !disableSideLook) {
 		float stickX = -(float)pad->GetCarGunLeftRight();
 		float stickY = (float)pad->GetCarGunUpDown();
 
@@ -601,11 +601,11 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 			stickY = 0.0f;
 		}
 
-		// With the smooth side view on, the game's look keys swing the camera
-		// (the mod's smooth look) instead of free-looking, so drop just the
-		// horizontal keyboard contribution; the right stick still free-looks.
-		// Helicopters/RC Baron are exempt: there those keys yaw the vehicle.
-		if (smoothSideView && !disableSideLook && (pad->GetLookLeft() || pad->GetLookRight()))
+		// The game's own look keys must never drive the free camera: with the
+		// smooth side view on they swing the side view instead, and on aircraft
+		// (helicopters, planes, the RC Baron) they yaw/rudder the vehicle. The
+		// right stick still free-looks for everything except those vehicles.
+		if ((pad->GetLookLeft() || pad->GetLookRight()) && (smoothSideView || disableSideLook))
 			stickX = 0.0f;
 
 		const bool ginputHasPad = GInputPadInHands();
@@ -645,14 +645,16 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	// While the mod's free camera is driving the view, swallow the game's own
 	// left/right snap (see the look hooks). Once it is idle the native side view
 	// takes over again, which restores the keyboard look keys and the drive-by.
-	gFreeLookOwnsLR = mouseChangesBeta;
+	// Aircraft yaw/rudder with the look-left/right keys, so swallow the native
+	// look-left/right for them too (they never drive the camera there).
+	gFreeLookOwnsLR = mouseChangesBeta || disableSideLook;
 
 	// ---- Smooth side view: decide the look angle up front ----
 	// The look only changes Beta. The vanilla string placement below, the
 	// height/pitch pass and the collision then run exactly as they do for the
 	// normal rear view, so a side view gets identical behaviour (including its
 	// working collision) instead of a separate placement.
-	const bool lookBehindHeld = pad->GetLookBehindForCar();
+	const bool lookBehindHeld = !disableSideLook && pad->GetLookBehindForCar();
 	const bool lookLeftHeld = !disableSideLook && pad->GetLookLeft();
 	const bool lookRightHeld = !disableSideLook && pad->GetLookRight();
 	const int lookNow = lookBehindHeld ? 1 : (lookLeftHeld ? 2 : (lookRightHeld ? 3 : 0));
