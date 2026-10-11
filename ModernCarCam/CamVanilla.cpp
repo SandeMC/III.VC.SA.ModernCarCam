@@ -647,6 +647,66 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	// takes over again, which restores the keyboard look keys and the drive-by.
 	gFreeLookOwnsLR = mouseChangesBeta;
 
+	// ---- Smooth side view: decide the look angle up front ----
+	// The look only changes Beta. The vanilla string placement below, the
+	// height/pitch pass and the collision then run exactly as they do for the
+	// normal rear view, so a side view gets identical behaviour (including its
+	// working collision) instead of a separate placement.
+	const bool lookBehindHeld = pad->GetLookBehindForCar();
+	const bool lookLeftHeld = !disableSideLook && pad->GetLookLeft();
+	const bool lookRightHeld = !disableSideLook && pad->GetLookRight();
+	const int lookNow = lookBehindHeld ? 1 : (lookLeftHeld ? 2 : (lookRightHeld ? 3 : 0));
+	static float modLookBeta = 0.0f;
+	static float modLookBetaSpeed = 0.0f;
+	static bool modLookReturning = false;
+	static bool modLookOwnsBeta = false;
+	if (cam->ResetStatics) {
+		modLookBeta = 0.0f;
+		modLookBetaSpeed = 0.0f;
+		modLookReturning = false;
+		modLookOwnsBeta = false;
+	}
+	if (mouseChangesBeta) {
+		modLookReturning = false;
+		modLookBetaSpeed = 0.0f;
+		modLookOwnsBeta = false;
+	}
+	const bool wantLook = smoothSideView && (lookNow != 0 || modLookReturning);
+	if (wantLook && !modLookOwnsBeta) {
+		// Seed the accumulator from the current camera angle so the swing starts
+		// smoothly from wherever the camera is.
+		modLookBeta = cam->Beta;
+		modLookBetaSpeed = 0.0f;
+		modLookOwnsBeta = true;
+	} else if (!wantLook) {
+		modLookOwnsBeta = false;
+	}
+	bool modLookActive = wantLook;
+	if (modLookActive) {
+		if (lookNow != 0)
+			modLookReturning = true;
+		float betaTarget = TargetOrientation;
+		if (lookNow == 1)
+			betaTarget = TargetOrientation + PI;     // behind: look from the front
+		else if (lookNow == 2)
+			betaTarget = TargetOrientation + HALFPI; // left
+		else if (lookNow == 3)
+			betaTarget = TargetOrientation - HALFPI; // right
+		// Short way from the accumulator (the engine re-wraps Beta each frame).
+		while (betaTarget < modLookBeta - PI) betaTarget += TWOPI;
+		while (betaTarget > modLookBeta + PI) betaTarget -= TWOPI;
+		WellBufferMe(betaTarget, &modLookBeta, &modLookBetaSpeed, 0.24f, 0.10f, true);
+		modLookBeta = LimitRadianAngle(modLookBeta);
+		// Release to the engine's own handler while still a few degrees out (like
+		// SA); the follow Beta-fix below finishes the return.
+		if (lookNow == 0 && fabsf(LimitRadianAngle(modLookBeta - betaTarget)) < 0.02f) {
+			modLookReturning = false;
+			modLookBetaSpeed = 0.0f;
+			modLookActive = false;
+			modLookOwnsBeta = false;
+		}
+	}
+
 	// ---- Basic string constraint (Cam_On_A_String_Unobscured) ----
 	// The string only constrains the distance to the target. The direction comes
 	// from Beta, which is derived from the current position unless the player is
@@ -676,6 +736,13 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	// Alpha raises the camera), so the mouse pitch is inverted to match SA.
 	cam->Beta = LimitRadianAngle(cam->Beta + mouseXMovement);
 	cam->Alpha = LimitRadianAngle(cam->Alpha - mouseYMovement);
+
+	// The smooth side view owns the direction: use the look angle for the normal
+	// string placement below (and therefore for the height pass and collision).
+	if (modLookActive) {
+		cam->Beta = modLookBeta;
+		cam->BetaSpeed = 0.0f;
+	}
 
 	cam->Source.x = TargetCoors.x - cosf(cam->Beta) * stringLength;
 	cam->Source.y = TargetCoors.y - sinf(cam->Beta) * stringLength;
@@ -737,10 +804,6 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 			else if (zoomIndicator == 3) AlphaOffset = GetATanOfXY(7.0f, zv);
 		}
 	}
-
-	// Pitch before the height/pitch pass eases it. A smooth side view holds this
-	// pitch, so the view does not climb or dip as the camera swings to the side.
-	const float modLookAlphaHold = cam->Alpha;
 
 	// ---- Camera height / pitch (WorkOutCamHeight) ----
 	{
@@ -1002,7 +1065,6 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 		reverseBetaSpeed = 0.0f;
 
 	// ---- Look (smooth side view) / rotate the camera behind the car ----
-	bool modLookActive = false;
 	{
 		const float maxDiffBeta = DEGTORAD(160.0f);
 		float forwardSpeed = reverseSpeed;
@@ -1014,113 +1076,10 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 		bool setBeta = TheCamera->m_bCamDirectlyBehind || TheCamera->m_bCamDirectlyInFront || TheCamera->m_bUseTransitionBeta;
 		float stiffness = max(0.0f, cameraStiffness) * max(0.0f, cameraAnchoring);
 
-		// Smooth side view on: the mod owns look left/right/behind and eases in
-		// and back out like the SA engine. Off: the game's native
-		// LookBehind/Left/Right is left untouched (see InitVanillaLookHooks).
-		const bool lookBehindHeld = pad->GetLookBehindForCar();
-		// Helicopters and the RC Baron yaw with the look-left/right keys, so the
-		// smooth side view must ignore those keys there (vanilla disables its own
-		// left/right handling for these vehicles in CCam::Process).
-		const bool lookLeftHeld = !disableSideLook && pad->GetLookLeft();
-		const bool lookRightHeld = !disableSideLook && pad->GetLookRight();
-		const int lookNow = lookBehindHeld ? 1 : (lookLeftHeld ? 2 : (lookRightHeld ? 3 : 0));
-		// The smooth side view owns Beta in its own accumulator. The vanilla string
-		// re-derives Beta from the one-frame-old camera position and eases it back
-		// towards the car heading every frame (the speed-scaled ease above); at high
-		// speed that pull is strong enough to keep the side view short of a full 90
-		// degrees. Writing Beta back from the accumulator after that ease keeps the
-		// swing exact regardless of speed. (The SA engine skips its Beta
-		// integration while a look is active, so it does not need this.)
-		static float modLookBeta = 0.0f;
-		static float modLookBetaSpeed = 0.0f;
-		static bool modLookReturning = false;
-		static bool modLookOwnsBeta = false;
-		// Look radius, captured once when the look starts (from the follow camera's
-		// own distance). It must not be re-read from the camera position each frame:
-		// the collision below moves the camera, which would shrink the distance and
-		// make the side view creep towards the car.
-		static float vcLookDist = -1.0f;
-		if (cam->ResetStatics) {
-			modLookBeta = 0.0f;
-			modLookBetaSpeed = 0.0f;
-			modLookReturning = false;
-			modLookOwnsBeta = false;
-			vcLookDist = -1.0f;
-		}
-		// If the player starts free-looking during the return, abandon the return
-		// immediately and let the mouse own Beta (otherwise the two fight until the
-		// return reaches the default).
-		if (mouseChangesBeta) {
-			modLookReturning = false;
-			modLookBetaSpeed = 0.0f;
-			modLookOwnsBeta = false;
-		}
-
-		const bool wantLook = smoothSideView && (lookNow != 0 || modLookReturning);
-		if (wantLook && !modLookOwnsBeta) {
-			// Seed the accumulator from the current camera angle so the swing starts
-			// smoothly from wherever the camera is, and take the follow camera's
-			// distance as the look radius for this whole look.
-			modLookBeta = cam->Beta;
-			modLookBetaSpeed = 0.0f;
-			modLookOwnsBeta = true;
-			vcLookDist = stringLength;
-		} else if (!wantLook) {
-			modLookOwnsBeta = false;
-			vcLookDist = -1.0f;
-		}
-		modLookActive = wantLook;
+		// The smooth-side-view look angle is decided up front (before the string
+		// placement), so here we only publish the drive-by aim it implies. The
+		// native look, which normally sets these, is bypassed while it is on.
 		if (modLookActive) {
-			if (lookNow != 0)
-				modLookReturning = true;
-			// reVC's LookBehind/Left/Right place the camera at CA_MAX_DISTANCE in
-			// front/at the side of the car and look back at it. In this engine's
-			// Beta convention that position is at (reVC angle + PI).
-			float betaTarget = TargetOrientation;
-			if (lookNow == 1)
-				betaTarget = TargetOrientation + PI;     // behind: look from the front
-			else if (lookNow == 2)
-				betaTarget = TargetOrientation + HALFPI; // left
-			else if (lookNow == 3)
-				betaTarget = TargetOrientation - HALFPI; // right
-			// Short way from the accumulator (the engine re-wraps Beta each frame).
-			while (betaTarget < modLookBeta - PI) betaTarget += TWOPI;
-			while (betaTarget > modLookBeta + PI) betaTarget -= TWOPI;
-			WellBufferMe(betaTarget, &modLookBeta, &modLookBetaSpeed, 0.24f, 0.10f, true);
-			modLookBeta = LimitRadianAngle(modLookBeta);
-			// Take Beta back from the string engine so its ease cannot drag the side
-			// view back towards the car heading.
-			cam->Beta = modLookBeta;
-			cam->BetaSpeed = 0.0f;
-			// Release to the engine's own handler while still a few degrees out
-			// (like SA). Do not force Beta onto the target here: that forced step
-			// was the ~5 degree jump on release; the auto-fix below finishes it.
-			if (lookNow == 0 && fabsf(LimitRadianAngle(modLookBeta - betaTarget)) < 0.02f) {
-				modLookReturning = false;
-				modLookBetaSpeed = 0.0f;
-				modLookActive = false;
-				modLookOwnsBeta = false;
-				vcLookDist = -1.0f;
-			}
-			// Use the radius captured when the look started (the follow camera's
-			// own distance) and pin the pitch to the follow value. That keeps the
-			// side view on the same radius and height as the normal camera, so
-			// engaging the look does not lift or zoom the view, and the collision
-			// below cannot feed back into the distance.
-			float lookDist = (vcLookDist > 0.0f) ? vcLookDist : stringLength;
-			if (lookDist < cam->CA_MIN_DISTANCE)
-				lookDist = cam->CA_MIN_DISTANCE;
-			cam->Alpha = modLookAlphaHold;
-			cam->Source.x = TargetCoors.x - cosf(cam->Beta) * lookDist;
-			cam->Source.y = TargetCoors.y - sinf(cam->Beta) * lookDist;
-			cam->Source.z = TargetCoors.z + sinf(cam->Alpha + AlphaOffset) * lookDist + cam->m_fCloseInCarHeightOffset;
-			// The follow collision below clamps this position out of geometry. It
-			// now runs during a look too: the look owns Beta (in modLookBeta), so
-			// the clamp can no longer warp the look angle the way it did before.
-			// Publish the look into the cam flags the drive-by reads (the native
-			// look would normally set these, but it is bypassed while smooth side
-			// view is on). Publish the aim only when this camera is the active one;
-			// a manual drive-by that has taken over the camera keeps its own aim.
 			const bool pedAimCamera = IsPedAimCameraMode(cam->Mode);
 			cam->LookingBehind = pedAimCamera ? false : (lookNow == 1);
 			cam->LookingLeft = pedAimCamera ? false : (lookNow == 2);

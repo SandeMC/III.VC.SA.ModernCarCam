@@ -9,6 +9,14 @@ Debug/
 *.zip
 .kilo/
 
+# IDA databases
+*.i64
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+
 # Third-party reference mods (kept outside the repo, e.g. D:\CarCamReferences)
 Manual Driveby III/
 Manual Driveby VC/
