@@ -427,6 +427,14 @@ constexpr float VCSCamShakeDivisor = 200.0f;
 constexpr float NonSACamShakeScale = 1.5f;
 constexpr float SAEnhancedCamShakeScale = 0.5f;
 
+// KeepCameraOverWater only lifts the camera to water whose surface is at or
+// below the car, plus this small reach for the shoreline and shallow
+// crossings. The engine's CWaterLevel::GetWaterLevelNoWaves reports any water
+// within 20 m above the query point, so without this a raised pool or canal
+// (for example the house pools above Richman's tunnel) reports a surface well
+// above the car and yanks the camera up onto it.
+constexpr float WaterClampReach = 1.0f;
+
 inline float VCSCamShakeScale(void) {
 	if (cameraProfile != PROFILE_ENHANCED)
 		return 1.0f;

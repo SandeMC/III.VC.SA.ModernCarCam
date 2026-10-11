@@ -1499,7 +1499,12 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 			float level = -6000.0;
 			// The +0.5 offset is needed in GTA III.
 			if (CWaterLevel::GetWaterLevelNoWaves(cam->Source.x, cam->Source.y, cam->Source.z, &level)) {
-				if (cam->Source.z < level + 0.5f)
+				// GetWaterLevelNoWaves reports any water within 20 m above the
+				// query point, so a raised pool or canal (for example the house
+				// pools above Richman's tunnel) would otherwise pull the camera
+				// up onto a surface that is nowhere near the car. Only keep the
+				// camera above water the car is on or just under.
+				if (level <= CameraTarget.z + WaterClampReach && cam->Source.z < level + 0.5f)
 					cam->Source.z = level + 0.5f;
 			}
 		}
