@@ -141,10 +141,18 @@ void registerDebugMenuEntries(void)
 	DebugMenuAddVar("ModernCarCam|Camera", "Reverse cam delay (s)", &reverseCamDelay, nil, 0.05f, 0.0f, 10.0f);
 	DebugMenuAddVar("ModernCarCam|Camera", "Free-look return speed (x)", &cameraReturnSpeed, nil, 0.05f, 0.0f, 5.0f);
 	DebugMenuAddVar("ModernCarCam|Camera", "Free-look return time (s)", &cameraReturnTime, nil, 0.05f, 0.0f, 5.0f);
+	DebugMenuAddVar("ModernCarCam|Camera", "Free-look reset time (x)", &cameraResetTime, nil, 0.05f, 0.05f, 5.0f);
+	{
+		static const char* resetOrderNames[] = { "Both axes", "Vertical first", "Horizontal first" };
+		DebugMenuAddInt8("ModernCarCam|Camera", "Free-look reset order", (int8_t*)&cameraResetOrder, nil, 1, 0, 2, resetOrderNames);
+	}
+	DebugMenuAddVar("ModernCarCam|Camera", "Reset vertical share (x)", &cameraResetVerticalTime, nil, 0.05f, 0.0f, 5.0f);
+	DebugMenuAddVar("ModernCarCam|Camera", "Reset horizontal share (x)", &cameraResetHorizontalTime, nil, 0.05f, 0.0f, 5.0f);
 
 	// --- Look and shooting ---
 	DebugMenuAddVarBool8("ModernCarCam|Look & shooting", "Mouse free-look", (int8*)&mouseFreeLook, nil);
 	DebugMenuAddVarBool8("ModernCarCam|Look & shooting", "Keyboard free-look", (int8*)&keyboardFreeLook, nil);
+	DebugMenuAddVarBool8("ModernCarCam|Look & shooting", "Disable side view", (int8*)&disableSideView, nil);
 	DebugMenuAddVarBool8("ModernCarCam|Look & shooting", "Smooth side view", (int8*)&smoothSideView, nil);
 	DebugMenuAddVarBool8("ModernCarCam|Look & shooting", "Reverse look-behind camera", (int8*)&reverseCam, nil);
 	DebugMenuAddVarBool8("ModernCarCam|Look & shooting", "Modern drive-by", (int8*)&modernDriveBy, nil);
@@ -154,6 +162,7 @@ void registerDebugMenuEntries(void)
 
 	// --- Fixes ---
 	DebugMenuAddVarBool8("ModernCarCam|Fixes", "Fix camera clipping", (int8*)&fixTheBug, nil);
+	DebugMenuAddVarBool8("ModernCarCam|Fixes", "Camera collides with props", (int8*)&cameraPropCollision, nil);
 	DebugMenuAddVarBool8("ModernCarCam|Fixes", "Keep camera over water", (int8*)&dbgKeepCameraOverWater,
 		[]() { seeUnderwater = !dbgKeepCameraOverWater; });
 	DebugMenuAddVarBool8("ModernCarCam|Fixes", "Bikes cam raise (passenger)", (int8*)&heightIncreaseOnBike, nil);

@@ -17,6 +17,7 @@ For Widescreen Fix users: this mod takes over the Widescreen Fix's own Speed Sen
 For Drive-by mods users:
 - Modernized Driveby features have been reimplemented in this mod; I wouldn't recommend using both mods at once
 - [Manual Driveby VC](https://libertycity.net/files/gta-vice-city/213323-manual-driveby-vc.html), [Manual Driveby III](https://libertycity.net/files/gta-3/213322-manual-driveby-iii.html) and [Manual Driveby Refixed (SA)](https://libertycity.net/files/gta-san-andreas/213857-manual-driveby-refixed.html) are the only "Manual" style mods tested against this mod and verified to be compatible
+- When Manual Driveby Refixed is found anywhere in the GTA San Andreas game folder, its side view is disabled by default (`DisableSideView = Auto`); set that key to `0` to override the detection
 
 ## Profiles
 
@@ -51,6 +52,10 @@ IV is an approximation of IVs feel applied on top of the SA camera; its exact di
 - Free turret control from San Andreas (Rhino / Firetruck)
 - Modern drive-by aiming - aim where the camera looks, with an optional per-burst direction lock, separate for keyboard/mouse and gamepad
 - Smooth side view - the look left/right/behind transition swings into place instead of snapping
+- Option to disable the side view entirely, automatically enabled on GTA San Andreas when Manual Driveby Refixed is detected in the game folder
+- Configurable free-look reset: both axes together or one axis at a time (vertical first or horizontal first), with an overall duration multiplier and per-axis time shares
+- San Andreas special-feature aircraft (Hydra, Andromada) keep the vanilla horizontal look/turret camera while their stick axes remain reserved for the vehicle feature
+- Configurable camera collision: optionally ignore props such as lampposts and other cars in the normal rear view and collide only with buildings and map geometry (the free camera and side views always ignore props)
 - Configurable dynamic speed FOV (ported from ThirteenAG's Widescreen Fix)
 - Configurable Vice City Stories camera shake (ported from ThirteenAG's Widescreen Fix)
 - Configurable Steering wobble from Vice City

@@ -164,6 +164,12 @@ void applyProfile(ModernProfile profile, bool vc) {
 	lockShootDirKBM = true;
 	lockShootDirJOY = true;
 	smoothSideView = false;            // vanilla instant look; Enhanced enables the smooth side view
+	disableSideView = false;           // look left/right/behind is enabled unless the ini/detection turns it off
+	cameraPropCollision = true;        // collide with props (lampposts, cars) as before
+	cameraResetOrder = 0;              // both axes return together
+	cameraResetTime = 1.0f;            // 1.0 = the existing return duration
+	cameraResetVerticalTime = 1.0f;    // equal per-axis shares when a per-axis mode is selected
+	cameraResetHorizontalTime = 1.0f;
 	keyboardFreeLook = sa;             // keyboard drives the free camera in SA (native), not in III/VC
 	topDownEnhance = false;            // the GTA III top-down enhancement is opt-in
 	mouseFreeLook = true;
@@ -293,10 +299,11 @@ void applyProfile(ModernProfile profile, bool vc) {
 	case PROFILE_IV:
 		// IV has no steering wobble, but it does pitch with the terrain in both
 		// directions, so enable the slope tilt symmetrically (uphill and downhill
-		// at the master strength). Its camera has a light elastic stretch and a
-		// subtle speed FOV, both lighter than the Enhanced profile's. It stays on
-		// the SA follow camera (cameraAnchoring 0): the elastic string is applied
-		// there too, and the on-a-string engine sat the IV camera too high on III.
+		// at the master strength). The camera stretches noticeably with speed and
+		// the speed FOV is now twice the old IV value (matching the Enhanced max
+		// add). It stays on the SA follow camera (cameraAnchoring 0): the elastic
+		// string is applied there too, and the on-a-string engine sat the IV
+		// camera too high on III.
 		cameraWobble = 0.0f;
 		pitchTilt = 1.0f;
 		pitchTiltUphill = -1.0f;
@@ -308,8 +315,12 @@ void applyProfile(ModernProfile profile, bool vc) {
 		// runs it at half strength there to hold the yaw into gentle turns like VC
 		// does; Vice City keeps the full follow.
 		headingFollow = isIII() ? 0.5f : 1.0f;
-		elasticStringPhysics = 0.5f;   // lighter than the Enhanced profile's 1.0
-		dynamicSpeedFOV = 0.5f;        // subtle speed FOV (half of Enhanced)
+		// Back to the original IV feel: the follow camera already moves more
+		// than the vanilla III/VC string engine, so the extra string stays at
+		// the old 0.5. The speed FOV uses a 1.2 rate with a 50 degree maximum.
+		elasticStringPhysics = 0.5f;
+		dynamicSpeedFOV = 1.2f;
+		dynamicSpeedFOVMaxFOV = 50.0f;
 		dynamicSpeedFOVDecay = 0.90f;  // snaps back quickly when slowing down
 		// GTA IV keeps the driver's seat centred on screen, so the orbit target
 		// is the driver's seat (left, forward, up from the car centre). The height
@@ -333,9 +344,11 @@ void applyProfile(ModernProfile profile, bool vc) {
 		cameraStiffness = 1.0f;
 		// The SA camera keeps its own steering feel (no VC steering wobble), but
 		// the VCS high-speed shake is wanted on SA's Enhanced profile, at the same
-		// half strength the Enhanced profile uses elsewhere.
+		// half strength the Enhanced profile uses elsewhere. The pass-by traffic
+		// wobble is halved on SA specifically.
 		cameraWobble = 0.0f;
 		vcsCamShake = 0.5f;
+		trafficCamWobble = 0.5f;
 	}
 }
 

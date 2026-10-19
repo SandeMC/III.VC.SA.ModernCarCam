@@ -19,7 +19,9 @@ For Drive-by mods users:
 - Manual Driveby VC - https://libertycity.net/files/gta-vice-city/213323-manual-driveby-vc.html),
   Manual Driveby III - https://libertycity.net/files/gta-3/213322-manual-driveby-iii.html
   and Manual Driveby Refixed (SA) - https://libertycity.net/files/gta-san-andreas/213857-manual-driveby-refixed.html
-  are the only "Manual" style mods tested against this mod and verified to be compatible
+  are the only "Manual" style mods tested against this mod and verified to be compatible.
+- When Manual Driveby Refixed is detected anywhere in the GTA San Andreas game folder,
+  the side view is disabled by default (DisableSideView = Auto). Set it to 0 to override.
 
 Sources
 -------

@@ -1,6 +1,7 @@
 #include "ModernCarCam.h"
 
 #include <vector>
+#include <string>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +52,10 @@ float reverseCamDelay = 0.0f;             // set by applyProfile
 float dynamicSpeedFOVDecay = 0.0f;        // set by applyProfile
 float cameraReturnSpeed = 1.0f;
 float cameraReturnTime = 0.5f;
+int8_t cameraResetOrder = 0;            // 0 = both axes, 1 = vertical first, 2 = horizontal first
+float cameraResetTime = 1.0f;           // multiplier on the total reset duration
+float cameraResetVerticalTime = 1.0f;   // per-axis share (per-axis modes)
+float cameraResetHorizontalTime = 1.0f; // per-axis share (per-axis modes)
 bool modernTurretControl = true;
 bool modernDriveBy = true;
 bool lockShootDirKBM = true;
@@ -64,6 +69,13 @@ bool enhancedVC = false;
 // Smooth side view: true swings the look left/right/behind smoothly, false uses
 // the vanilla instant change.
 bool smoothSideView = false;
+// Disable side view: true removes look left/right/behind entirely, in every
+// game. The ini can force it, and LoadSettings() turns it on automatically on
+// San Andreas when the Manual Driveby Refixed mod is present.
+bool disableSideView = false;
+// Camera collision with props: true keeps collision with vehicles and objects
+// (lampposts, fences, etc.); false leaves only buildings and map geometry.
+bool cameraPropCollision = true;
 // Keyboard free-look: true lets the game's own keyboard look/turret keys drive
 // the free camera; false leaves only the mouse and the analogue stick. Defaults
 // to on in San Andreas (how SA behaves) and off in III/VC, where the keyboard
@@ -298,6 +310,82 @@ const CarCamSettings* FindCarCameraOverride(int modelIndex)
 		}
 	}
 	return nil;
+}
+
+// ---------------------------------------------------------------------------
+// Manual Driveby Refixed detection (San Andreas only)
+//
+// The mod is a CLEO/modloader folder ("Manual Driveby Refixed") containing a
+// script whose name normalises to manualdrivebyrefixed. It is installed
+// anywhere under the game folder, often inside modloader, so the whole tree is
+// scanned once at startup. Symbolic links/reparse points are skipped so a link
+// loop cannot hang the scan.
+// ---------------------------------------------------------------------------
+static bool NameMentionsDrivebyRefixed(const char* name)
+{
+	std::string normalised;
+	for (const unsigned char* p = (const unsigned char*)name; *p; ++p) {
+		if (isalnum(*p))
+			normalised.push_back((char)tolower(*p));
+	}
+	return normalised.find("drivebyrefixed") != std::string::npos;
+}
+
+static bool FolderContainsDrivebyRefixed(const std::string& folder, int depth)
+{
+	if (depth < 0 || folder.size() + 4 >= MAX_PATH)
+		return false;
+
+	WIN32_FIND_DATAA data;
+	const std::string pattern = folder + "\\*";
+	HANDLE find = FindFirstFileA(pattern.c_str(), &data);
+	if (find == INVALID_HANDLE_VALUE)
+		return false;
+
+	bool found = false;
+	do {
+		const char* name = data.cFileName;
+		if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+			continue;
+
+		if (NameMentionsDrivebyRefixed(name)) {
+			found = true;
+			break;
+		}
+
+		const DWORD attributes = data.dwFileAttributes;
+		if ((attributes & FILE_ATTRIBUTE_DIRECTORY) &&
+		    !(attributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+		    folder.size() + strlen(name) + 2 < MAX_PATH) {
+			if (FolderContainsDrivebyRefixed(folder + '\\' + name, depth - 1)) {
+				found = true;
+				break;
+			}
+		}
+	} while (FindNextFileA(find, &data));
+
+	FindClose(find);
+	return found;
+}
+
+static bool DetectDrivebyRefixedMod(void)
+{
+	// The mod is San Andreas only.
+	if (!isSA())
+		return false;
+
+	char exePath[MAX_PATH];
+	const DWORD length = GetModuleFileNameA(NULL, exePath, MAX_PATH);
+	if (length == 0 || length >= MAX_PATH)
+		return false;
+
+	// Use the executable's folder, not the working directory (modloader changes it).
+	char* slash = strrchr(exePath, '\\');
+	if (!slash)
+		return false;
+	*slash = 0;
+
+	return FolderContainsDrivebyRefixed(exePath, 16);
 }
 
 // The resolved ini path, kept so the per-car sections can be re-read when the
@@ -618,6 +706,10 @@ void LoadSettings()
 	if (ReadMultiplier("ReverseCameraDelay", value))    reverseCamDelay = value;
 	if (ReadMultiplier("CameraReturnSpeed", value))     cameraReturnSpeed = value;
 	if (ReadMultiplier("CameraReturnTime", value))      cameraReturnTime = value;
+	if (ReadMultiplier("CameraResetTime", value))       cameraResetTime = max(0.05f, value);
+	if (ReadMultiplier("CameraResetVerticalTime", value))   cameraResetVerticalTime = max(0.0f, value);
+	if (ReadMultiplier("CameraResetHorizontalTime", value)) cameraResetHorizontalTime = max(0.0f, value);
+	if (ReadMultiplier("CameraResetOrder", value))      cameraResetOrder = clamp((int)(value + 0.5f), 0, 2);
 
 	// [Features] plain switches.
 	ReadBool("ModernTurretControl", modernTurretControl);
@@ -630,6 +722,18 @@ void LoadSettings()
 	ReadBool("BikesHeightIncrease", heightIncreaseOnBike);
 	ReadBool("SmoothSideView", smoothSideView);
 	ReadBool("KeyboardFreeLook", keyboardFreeLook);
+
+	// DisableSideView: an explicit 0/1 always wins; Auto turns it on only on
+	// San Andreas when Manual Driveby Refixed is found in the game folder.
+	int sideViewSwitch = ReadSwitch("DisableSideView");
+	if (sideViewSwitch != -1)
+		disableSideView = (sideViewSwitch != 0);
+	else
+		disableSideView = DetectDrivebyRefixedMod();
+
+	// CameraCollisionProps: 0 leaves only buildings and map geometry. The
+	// profile default is on, so Auto keeps the existing behaviour.
+	ReadBool("CameraCollisionProps", cameraPropCollision);
 
 	// [TopDown] - GTA III top-down camera enhancements.
 	{

@@ -142,7 +142,13 @@ extern bool reverseCam;
 extern bool seeUnderwater;
 extern bool enhancedVC;                    // Enhanced uses Vice City's features + camera angles even in GTA III
 extern bool smoothSideView;                 // smooth side view: look left/right/behind swings smoothly instead of the vanilla instant change
+extern bool disableSideView;                // no side view at all: look left/right/behind never move the camera
 extern bool keyboardFreeLook;               // let the game's keyboard look/turret keys (numpad) drive the free camera; on by default in SA, off in III/VC
+extern bool cameraPropCollision;            // camera collides with props (lampposts, cars); false = buildings/map geometry only
+extern int8_t cameraResetOrder;             // free-look reset: 0 both, 1 vertical first, 2 horizontal first
+extern float cameraResetTime;               // multiplier on the total free-look reset duration (1 = current)
+extern float cameraResetVerticalTime;       // per-axis share of the reset (per-axis modes only)
+extern float cameraResetHorizontalTime;     // per-axis share of the reset (per-axis modes only)
 
 // ---- GTA III top-down camera enhancements (stacked on the game's own camera) ----
 // GTA III's MODE_TOPDOWN / MODE_GTACLASSIC, post-processed so the distance can be
@@ -368,6 +374,8 @@ extern bool lookingRelativelyRight;
 #define Tank (isIII() ? MI_III_RHINO : (isReLCS ? MI_RELCS_RHINO : MI_VC_RHINO))
 #define FireTruk (isIII() ? MI_III_FIRETRUCK : (isReLCS ? MI_RELCS_FIRETRUCK : MI_VC_FIRETRUCK))
 #define MI_SA_FIRETRUCK 407
+constexpr int MI_SA_HYDRA = 520;
+constexpr int MI_SA_ANDROMADA = 592;
 // Fire truck model for the running game (SA uses its own id).
 #define IsFireTruk(veh) ((veh)->m_modelIndex == (isSA() ? MI_SA_FIRETRUCK : FireTruk))
 #define CarWithHydraulics (isIII() ? MI_III_YARDIE : (isReLCS ? MI_RELCS_YARDIE : MI_VC_VOODOO))
@@ -613,6 +621,135 @@ inline bool IsVehicleSuspensionHigh(CCameraSA* camera) { return camera->m_bVehic
 
 // The engine step buffer; defined in ModernCarCam.cpp.
 void WellBufferMe(float Target, float* CurrentValue, float* CurrentSpeed, float MaxSpeed, float Acceleration, bool IsAngle);
+
+// Shared free-look return timing. CameraReturnTime is the base duration in
+// seconds and CameraReturnSpeed scales it (higher = quicker). CameraResetTime
+// scales the result again; 1.0 keeps the existing duration. Every camera engine
+// uses the same smoothstep so the horizontal and vertical axes finish together
+// instead of the pitch snapping back first.
+inline float CameraFreeLookReturnDuration(void) {
+	return (max(0.02f, cameraReturnTime) / max(0.05f, cameraReturnSpeed)) *
+		max(0.05f, cameraResetTime);
+}
+
+inline float CameraFreeLookReturnEase(float progress) {
+	progress = clamp(progress, 0.0f, 1.0f);
+	return progress * progress * (3.0f - 2.0f * progress);
+}
+
+// Ease for one axis. In the default mode both axes use the same progress. In a
+// per-axis mode the total duration is shared according to the two time
+// multipliers, and only one axis moves at a time.
+inline float CameraFreeLookAxisEase(float progress, bool vertical,
+	bool verticalMoves = true, bool horizontalMoves = true) {
+	progress = clamp(progress, 0.0f, 1.0f);
+	if (cameraResetOrder != 1 && cameraResetOrder != 2)
+		return CameraFreeLookReturnEase(progress);
+
+	// An axis that is already at its target must not reserve a slice of the
+	// reset time, otherwise the other axis waits for it before starting.
+	if (!verticalMoves && !horizontalMoves)
+		return 1.0f;
+	if (!verticalMoves)
+		return vertical ? 1.0f : CameraFreeLookReturnEase(progress);
+	if (!horizontalMoves)
+		return vertical ? CameraFreeLookReturnEase(progress) : 1.0f;
+
+	float verticalWeight = max(0.0f, cameraResetVerticalTime);
+	float horizontalWeight = max(0.0f, cameraResetHorizontalTime);
+	if (verticalWeight + horizontalWeight <= 0.0001f) {
+		verticalWeight = 1.0f;
+		horizontalWeight = 1.0f;
+	}
+
+	// A zero share means that axis needs no time and is already back.
+	if (vertical && verticalWeight <= 0.0f)
+		return 1.0f;
+	if (!vertical && horizontalWeight <= 0.0f)
+		return 1.0f;
+
+	const float verticalPart = verticalWeight / (verticalWeight + horizontalWeight);
+	const float firstPart = (cameraResetOrder == 1) ? verticalPart : (1.0f - verticalPart);
+	const bool first = (cameraResetOrder == 1) ? vertical : !vertical;
+
+	// Split the single smoothstep instead of easing each half separately. Easing
+	// each half would come to a stop at the hand-off, so the second axis would
+	// appear to wait before starting. With this split the second axis starts on
+	// the same frame the first reaches its target, with no extra pause.
+	const float global = CameraFreeLookReturnEase(progress);
+	if (first)
+		return clamp((firstPart > 0.0001f) ? global / firstPart : 1.0f, 0.0f, 1.0f);
+	return clamp((firstPart < 0.9999f) ? (global - firstPart) / (1.0f - firstPart) : 1.0f, 0.0f, 1.0f);
+}
+
+// Per-camera free-look return state. Every engine used to keep the same seven
+// statics and repeat the same begin/advance/blend logic; this owns that state so
+// the engines only decide when the return starts and where it should end.
+struct CameraFreeLookReturn
+{
+	bool wasActive = false;
+	bool returning = false;
+	float progress = 0.0f;
+	float startBeta = 0.0f;
+	float startAlpha = 0.0f;
+	float targetBeta = 0.0f;
+	float targetAlpha = 0.0f;
+	float betaEase = 0.0f;
+	float alphaEase = 0.0f;
+
+	// Full reset, used when (re)entering a vehicle or switching camera mode.
+	void Reset() {
+		wasActive = false;
+		Cancel();
+		progress = 0.0f;
+		betaEase = 0.0f;
+		alphaEase = 0.0f;
+	}
+
+	// Abandon the current return without touching the tracking state.
+	void Cancel() {
+		returning = false;
+	}
+
+	// Start a return from the current angles to the frozen follow targets.
+	void Begin(float beta, float alpha, float targetB, float targetA) {
+		returning = true;
+		progress = 0.0f;
+		betaEase = 0.0f;
+		alphaEase = 0.0f;
+		startBeta = beta;
+		startAlpha = alpha;
+		targetBeta = targetB;
+		targetAlpha = targetA;
+	}
+
+	// Advance by one frame and recompute both axis eases.
+	void Advance() {
+		if (!returning)
+			return;
+
+		const bool verticalMoves = fabsf(targetAlpha - startAlpha) > 0.0001f;
+		const bool horizontalMoves =
+			fabsf(LimitRadianAngle(targetBeta - startBeta)) > 0.0001f;
+
+		progress += (ms_fTimeStep * TimeStepToSeconds) / CameraFreeLookReturnDuration();
+		betaEase = CameraFreeLookAxisEase(progress, false, verticalMoves, horizontalMoves);
+		alphaEase = CameraFreeLookAxisEase(progress, true, verticalMoves, horizontalMoves);
+	}
+
+	bool Finished() const {
+		return returning && progress >= 1.0f;
+	}
+
+	float Beta() const {
+		return LimitRadianAngle(startBeta +
+			LimitRadianAngle(targetBeta - startBeta) * betaEase);
+	}
+
+	float Alpha() const {
+		return startAlpha + (targetAlpha - startAlpha) * alphaEase;
+	}
+};
 
 // RwCamera near clip; defined in ModernCarCam.cpp.
 void* RwCameraSetNearClipPlane(void* camera, float nearClip);

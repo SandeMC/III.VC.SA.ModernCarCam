@@ -140,6 +140,8 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	static float camPitchTiltSpeed = 0.0f;
 	static float slopeAirborneTime = 0.0f;   // seconds spent off the ground (slope tilt continuity)
 	static float slopeLastGroundTilt = 0.0f;  // last ground tilt, held through short hops
+	// Free-look return state: both axes share one smoothstep over CameraReturnTime.
+	static CameraFreeLookReturn freeLookReturn;
 
 	if (!cam->CamTargetEntity->IsVehicle())
 		return;
@@ -206,7 +208,27 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// Helicopters, planes and the RC Baron yaw/rudder with these keys too, so the
 	// mod reads no look input (side view, free-look or look-behind) on them at all.
 	const bool disableSideLook = DisableVehicleSideLook(car->m_modelIndex, isHeli, isPlane);
-	const bool lookCamInput = !fpActive && !disableSideLook;
+	// Vehicles whose moving part shares the right-stick axes with the camera.
+	const bool specialFeatureVehicle = isSA() && IsSpecialFeatureVehicle(car->m_modelIndex);
+
+	// The special-feature aircraft (Hydra, Andromada) are the cases where vanilla
+	// SA's own look handling is still useful: the right stick drives the moving
+	// part, so the mod zeroes its free look, but CCam::Process::LookLeft/Right is
+	// what produced the vanilla horizontal turret/camera rotation. Let that path
+	// run for them (and only them) without re-enabling the mod's side view or the
+	// mouse free look used by mouse plane controls.
+	const bool specialFeaturePlane = specialFeatureVehicle &&
+		(car->m_modelIndex == MI_SA_HYDRA || car->m_modelIndex == MI_SA_ANDROMADA);
+	const bool nativeLookAllowed = !GetDisablePlayerControls(pad);
+	const bool nativeLookBehind = specialFeaturePlane && nativeLookAllowed &&
+		pad->GetLookBehindForCar();
+	const bool nativeLookSide = specialFeaturePlane && nativeLookAllowed &&
+		(pad->GetLookLeft() || pad->GetLookRight());
+	const bool nativeLookActive = nativeLookBehind || nativeLookSide;
+	// DisableSideView removes the side view entirely (all games). The free
+	// camera and drive-by aiming stay available; only look left/right/behind is
+	// ignored, which is what the manual drive-by overhaul expects.
+	const bool lookCamInput = !fpActive && !disableSideLook && !disableSideView;
 	const bool lookBehindCar = lookCamInput && pad->GetLookBehindForCar();
 	const bool lookLeftKey = lookCamInput && pad->GetLookLeft();
 	const bool lookRightKey = lookCamInput && pad->GetLookRight();
@@ -214,7 +236,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 
 	// True while the follow camera is in control: no look input is held and it
 	// was already looking forward.
-	uint8 nextDirectionIsForward = !fpActive && !anyLookInput &&
+	uint8 nextDirectionIsForward = !fpActive && !anyLookInput && !nativeLookActive &&
 		cam->DirectionWasLooking == LOOKING_FORWARD;
 
 	if (distanceProfile == PROFILE_LCS && car->m_modelIndex == FireTruk) {
@@ -575,7 +597,9 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 			cam->FOV = pow(fovDecay, ms_fTimeStep) * (cam->FOV - currentBaseFOV) + currentBaseFOV;
 		}
 
-		float fovCap = currentBaseFOV + maxFOVAdd * ((dynamicSpeedFOV > 0.0f) ? dynamicSpeedFOV : 1.0f);
+		// DynamicSpeedFOV is the accumulation rate; DynamicSpeedFOVMaxFOV is
+		// the absolute number of degrees added at full speed.
+		float fovCap = currentBaseFOV + maxFOVAdd;
 		if (cam->FOV <= fovCap)
 		{
 			if (cam->FOV < currentBaseFOV)
@@ -637,6 +661,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 		lookState = 0;
 		lookBetaSpeed = 0.0f;
 		lookReturnFrames = 0;
+		freeLookReturn.Reset();
 		// Do not jump camPitchTilt to the raw slope target here: this branch also
 		// runs when returning from look left/right/behind, and the instant change
 		// read as the camera slamming to the top. The buffer above tracks the
@@ -694,7 +719,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// Look state: holding an input selects it, releasing swings back. The same
 	// state drives both modes; smooth side view only changes how the angle is
 	// applied.
-	int lookNow = lookBehindCar ? 1 : (!disableSideLook && lookLeftKey ? 2 : (!disableSideLook && lookRightKey ? 3 : 0));
+	const int lookNow = lookBehindCar ? 1 : (lookLeftKey ? 2 : (lookRightKey ? 3 : 0));
 	if (lookNow != 0) {
 		lookState = lookNow;
 		lookReturnFrames = 0;
@@ -755,6 +780,10 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	while (targetBeta > cam->Beta + PI)
 		targetBeta -= TWOPI;
 
+	// The angle the follow camera will hold when the player is not looking.
+	// The free-look return uses it as the destination for both axes.
+	const float followTargetBeta = targetBeta;
+
 	float carPosChange = (TargetCoors - m_aTargetHistoryPosTwo).Magnitude();
 	if (carPosChange < newDistance && newDistance > minDistForThisCar) {
 		newDistance = max(minDistForThisCar, carPosChange);
@@ -809,6 +838,11 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	{
 		targetAlpha = maxAlphaAllowed;
 	}
+
+	// Default pitch the free-look return eases back to. It is captured before
+	// the free-look input below overwrites targetAlpha for the active frame.
+	const float followTargetAlpha = targetAlpha;
+
 	float maxAlphaBlendAmount = ms_fTimeStep * CARCAM_SET[camSetArrPos][6];
 	float targetAlphaBlendAmount = (1.0f - pow(CARCAM_SET[camSetArrPos][5], ms_fTimeStep)) * (targetAlpha - cam->Alpha);
 	if (targetAlphaBlendAmount <= maxAlphaBlendAmount)
@@ -841,7 +875,9 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 
 	// On aircraft (helicopters, planes, the RC Baron) the look-left/right keys
 	// yaw/rudder the vehicle, so they must not drive the free camera there either.
-	if (disableSideLook && (pad->GetLookLeft() || pad->GetLookRight()))
+	// With the side view disabled entirely, the side-look keys are left to the
+	// game/manual drive-by mod instead of also driving the free camera.
+	if ((disableSideLook || disableSideView) && (pad->GetLookLeft() || pad->GetLookRight()))
 		stickX = 0.0f;
 
 	// SA gates this on m_bUseMouse3rdPerson so num2/num8 do not move the camera
@@ -871,6 +907,13 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	stickX = smoothedStickX;
 	stickY = smoothedStickY;
 
+	// The Hydra is the one special-feature vehicle whose horizontal turret keys
+	// (numpad 4/6) are the vanilla camera look. Keep the vertical axis with the
+	// moving part, but let those horizontal keys drive the camera again.
+	const bool hydraTurretCamera = specialFeatureVehicle && car->m_modelIndex == MI_SA_HYDRA;
+	if (hydraTurretCamera)
+		stickY = 0.0f;
+
 	const bool stickActive = fabsf(stickX) > 0.05f || fabsf(stickY) > 0.05f;
 
 	float v103 = cam->FOV * 0.0125f;
@@ -878,14 +921,10 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	float xMovement = fabsf(stickX) * (v103 * 0.071428575) * stickX * 0.007f * 0.007f;
 	float yMovement = fabsf(stickY) * (v103 * 0.042857144) * stickY * 0.007f * 0.007f;
 
-	// On the moving-part vehicles the right stick drives the feature, not the
-	// camera, so the camera must ignore it. This mirrors where the vanilla
-	// camera zeroes the stick look. The mouse path below is separate and still
-	// works, so free look is not lost.
-	const bool specialFeatureVehicle = isSA() && IsSpecialFeatureVehicle(car->m_modelIndex);
 	if (specialFeatureVehicle) {
-		xMovement = 0.0f;
 		yMovement = 0.0f;
+		if (!hydraTurretCamera)
+			xMovement = 0.0f;
 	}
 
 	bool correctAlpha = true;
@@ -973,7 +1012,9 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// instead of through SA's damped speed blending, which fights the player.
 	// This runs after the mouse block so a stick push is not cancelled by the
 	// mouse hold from the previous frame.
-	if ((mouseFreeLook || isSA()) && stickActive && !GetDisablePlayerControls(pad) && nextDirectionIsForward && !specialFeatureVehicle && !disableSideLook) {
+	if ((mouseFreeLook || isSA()) && stickActive && !GetDisablePlayerControls(pad) && nextDirectionIsForward &&
+	    (!specialFeatureVehicle || hydraTurretCamera) &&
+	    (!disableSideLook || hydraTurretCamera)) {
 		xMovement = fabsf(stickX) * (v103 * 0.071428575f) * stickX * 0.007f * 0.007f;
 		yMovement = fabsf(stickY) * (v103 * 0.042857144f) * stickY * 0.007f * 0.007f;
 		cam->BetaSpeed = 0.0f;
@@ -984,23 +1025,32 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 		lookInputThisFrame = true;
 	}
 
-	// Ease back to the default camera angle after free look, like the III/VC
-	// camera, instead of letting the native blend jump straight back. The scale
-	// ramps from a gentle 0.2 up to full once the hold has run out.
-	static bool freeLookWasActive = false;
-	static float freeLookReturn = 0.0f;
+	// The vanilla Hydra/Andromada look owns the camera while a look key is held;
+	// drop any mod free-look return so the two do not fight on release.
+	if (nativeLookActive)
+		freeLookReturn.Reset();
+
+	// Ease back to the default camera angle after free look. The stock 50-step
+	// input hold still applies, so releasing the mouse leaves the looked angle
+	// in place briefly before the return, exactly like the previous builds.
 	const bool freeLookNow = mouseChangesBeta;
-	if (freeLookWasActive && !freeLookNow)
-		freeLookReturn = 1.0f;
-	freeLookWasActive = freeLookNow;
-	float freeLookReturnScale = 1.0f;
-	if (freeLookReturn > 0.0f) {
-		// CameraReturnTime is how many seconds the auto-return lasts;
-		// CameraReturnSpeed scales how quickly it settles back.
-		float returnRate = max(0.05f, cameraReturnSpeed) / max(0.02f, cameraReturnTime);
-		freeLookReturn = max(0.0f, freeLookReturn - ms_fTimeStep * returnRate);
-		freeLookReturnScale = 0.2f + 0.8f * (1.0f - freeLookReturn);
+	if (freeLookReturn.returning && freeLookNow)
+		freeLookReturn.Cancel();
+	if (freeLookReturn.wasActive && !freeLookNow) {
+		// Freeze the destination. followTargetBeta depends on cam->Front, and
+		// cam->Front depends on Beta, so chasing the live value during the
+		// return fed the changing angle back into the target and made the yaw
+		// stutter. The normal follow resumes from this angle next frame.
+		freeLookReturn.Begin(cam->Beta, cam->Alpha, followTargetBeta, followTargetAlpha);
 	}
+	freeLookReturn.wasActive = freeLookNow;
+
+	// A side look or the reverse swing owns the angles; cancel a pending
+	// free-look return instead of letting the two ease towards different targets.
+	if (lookState != 0 || reverseState != 0)
+		freeLookReturn.Cancel();
+
+	freeLookReturn.Advance();
 
 	if (correctAlpha) {
 		if (previousMode != MODE_CAMONASTRING)
@@ -1035,65 +1085,81 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	if (lookInputThisFrame)
 		reversePlayerOverride = true;
 
-	float angleChangeStepLeft = 1.0 - angleChangeStep;
-	if ((reverseState == 0 && lookState == 0) || mouseChangesBeta) {
-		cam->BetaSpeed = targetBetaWithStickBlendAmount * angleChangeStepLeft + angleChangeStep * cam->BetaSpeed;
-		if (fabsf(cam->BetaSpeed) < 0.0001f)
-			cam->BetaSpeed = 0.0f;
-
-		float v121;
-		if (mouseChangesBeta)
-			v121 = betaSpeedFromStickX;
-		else
-			v121 = ms_fTimeStep * cam->BetaSpeed * freeLookReturnScale;
-		cam->Beta = v121 + cam->Beta;
-	}
-	
-	// SA re-derives Beta from the camera direction while leaving the garage.
-	if (TheCamera->m_bJustCameOutOfGarage)
-		cam->Beta = GetATanOfXY(cam->Front.x, cam->Front.y) + PI;
-
-	if (cam->Beta < -PI)
-		cam->Beta += TWOPI;
-	else if (cam->Beta > PI)
-		cam->Beta -= TWOPI;
-
-	if ((camSetArrPos <= 1 || (distanceProfile == PROFILE_LCS && camSetArrPos == 7)) && targetAlpha < cam->Alpha && carPosChange >= newDistance) {
-		if (isCar && GetWheelsOnGround(car) > 1 ||
-			isBike && GetMysteriousWheelRelatedThingBike(car) > 1)
-			alphaSpeedFromStickY += (targetAlpha - cam->Alpha) * 0.075f;
-	}
-
-	const float alphaBeforeLook = cam->Alpha;
-	cam->AlphaSpeed = angleChangeStepLeft * alphaSpeedFromStickY + angleChangeStep * cam->AlphaSpeed;
-	float maxAlphaSpeed = v117;
-	if (alphaSpeedFromStickY > 0.0f)
-		maxAlphaSpeed = maxAlphaSpeed * 0.5;
-
-	if (cam->AlphaSpeed <= maxAlphaSpeed)
-	{
-		float minAlphaSpeed = -maxAlphaSpeed;
-		if (cam->AlphaSpeed < minAlphaSpeed)
-			cam->AlphaSpeed = minAlphaSpeed;
-	}
-	else
-	{
-		cam->AlphaSpeed = maxAlphaSpeed;
-	}
-
-	if (fabsf(cam->AlphaSpeed) < 0.0001f)
-		cam->AlphaSpeed = 0.0f;
-
 	float alphaWithSpeedAccounted;
-	if (mouseChangesBeta)
-	{
-		alphaWithSpeedAccounted = alphaSpeedFromStickY + targetAlpha;
-		cam->Alpha += alphaSpeedFromStickY;
-	}
-	else
-	{
-		alphaWithSpeedAccounted = ms_fTimeStep * cam->AlphaSpeed + targetAlpha;
-		cam->Alpha += targetAlphaBlendAmount * freeLookReturnScale;
+	const float alphaBeforeLook = cam->Alpha;
+	if (freeLookReturn.returning) {
+		// Both axes are eased from the looked angles to the follow angles. In the
+		// default mode the two eases are identical; in a per-axis mode one stays
+		// at 0 while the other moves, then they swap.
+		cam->Beta = freeLookReturn.Beta();
+		cam->Alpha = freeLookReturn.Alpha();
+		cam->BetaSpeed = 0.0f;
+		cam->AlphaSpeed = 0.0f;
+		alphaWithSpeedAccounted = cam->Alpha;
+		if (freeLookReturn.Finished()) {
+			cam->Beta = LimitRadianAngle(freeLookReturn.targetBeta);
+			cam->Alpha = freeLookReturn.targetAlpha;
+			freeLookReturn.Cancel();
+		}
+	} else {
+		float angleChangeStepLeft = 1.0 - angleChangeStep;
+		if ((reverseState == 0 && lookState == 0) || mouseChangesBeta) {
+			cam->BetaSpeed = targetBetaWithStickBlendAmount * angleChangeStepLeft + angleChangeStep * cam->BetaSpeed;
+			if (fabsf(cam->BetaSpeed) < 0.0001f)
+				cam->BetaSpeed = 0.0f;
+
+			float v121;
+			if (mouseChangesBeta)
+				v121 = betaSpeedFromStickX;
+			else
+				v121 = ms_fTimeStep * cam->BetaSpeed;
+			cam->Beta = v121 + cam->Beta;
+		}
+
+		// SA re-derives Beta from the camera direction while leaving the garage.
+		if (TheCamera->m_bJustCameOutOfGarage)
+			cam->Beta = GetATanOfXY(cam->Front.x, cam->Front.y) + PI;
+
+		if (cam->Beta < -PI)
+			cam->Beta += TWOPI;
+		else if (cam->Beta > PI)
+			cam->Beta -= TWOPI;
+
+		if ((camSetArrPos <= 1 || (distanceProfile == PROFILE_LCS && camSetArrPos == 7)) && targetAlpha < cam->Alpha && carPosChange >= newDistance) {
+			if (isCar && GetWheelsOnGround(car) > 1 ||
+				isBike && GetMysteriousWheelRelatedThingBike(car) > 1)
+				alphaSpeedFromStickY += (targetAlpha - cam->Alpha) * 0.075f;
+		}
+
+		cam->AlphaSpeed = angleChangeStepLeft * alphaSpeedFromStickY + angleChangeStep * cam->AlphaSpeed;
+		float maxAlphaSpeed = v117;
+		if (alphaSpeedFromStickY > 0.0f)
+			maxAlphaSpeed = maxAlphaSpeed * 0.5;
+
+		if (cam->AlphaSpeed <= maxAlphaSpeed)
+		{
+			float minAlphaSpeed = -maxAlphaSpeed;
+			if (cam->AlphaSpeed < minAlphaSpeed)
+				cam->AlphaSpeed = minAlphaSpeed;
+		}
+		else
+		{
+			cam->AlphaSpeed = maxAlphaSpeed;
+		}
+
+		if (fabsf(cam->AlphaSpeed) < 0.0001f)
+			cam->AlphaSpeed = 0.0f;
+
+		if (mouseChangesBeta)
+		{
+			alphaWithSpeedAccounted = alphaSpeedFromStickY + targetAlpha;
+			cam->Alpha += alphaSpeedFromStickY;
+		}
+		else
+		{
+			alphaWithSpeedAccounted = ms_fTimeStep * cam->AlphaSpeed + targetAlpha;
+			cam->Alpha += targetAlphaBlendAmount;
+		}
 	}
 
 	// A look only swings Beta; keep the follow camera's pitch (Alpha) so the view
@@ -1108,7 +1174,9 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// The clamp is skipped during a look for the same reason as the integration:
 	// maxAlphaAllowed depends on Beta, so clamping would drag the pitch around as
 	// the camera swings to the side.
-	if (lookState == 0)
+	// In a per-axis reset the waiting axis must not be clamped by the other
+	// axis's changing limit. The default both-axis return keeps the old clamp.
+	if (lookState == 0 && (!freeLookReturn.returning || cameraResetOrder == 0))
 	{
 		if (cam->Alpha <= maxAlphaAllowed)
 		{
@@ -1126,15 +1194,16 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 		}
 	}
 
-	// Ignore angle changes too small to matter.
-	if (fabsf(lastAlpha - cam->Alpha) < 0.0001f)
+	// Ignore angle changes too small to matter, except during the free-look
+	// return. There the smoothstep starts and ends very slowly, so this
+	// dead-band would hold a frame and then jump, which read as horizontal
+	// stutter near the beginning and end of the reset.
+	if (!freeLookReturn.returning && fabsf(lastAlpha - cam->Alpha) < 0.0001f)
 		cam->Alpha = lastAlpha;
-
 	lastAlpha = cam->Alpha;
 
-	if (fabsf(lastBeta - cam->Beta) < 0.0001f)
+	if (!freeLookReturn.returning && fabsf(lastBeta - cam->Beta) < 0.0001f)
 		cam->Beta = lastBeta;
-
 	lastBeta = cam->Beta;
 
 	// ---- Reverse look-behind: drive Beta with its own state and speed so it
@@ -1435,7 +1504,12 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 		CColPoint foundCol;
 		CEntity* foundEnt;
 		pIgnoreEntity = (CEntity*)cam->CamTargetEntity;
-		if (WorldClass::ProcessLineOfSight(TargetCoors, cam->Source, foundCol, foundEnt, true, flt_9BF250 < 0.1f, false, true, false, true, false))
+		// The free camera and every look/side view have always ignored props;
+		// CameraCollisionProps only changes the normal rear view.
+		const bool skipProps = !cameraPropCollision || mouseChangesBeta ||
+			lookState != 0 || freeLookReturn.returning || reverseState != 0;
+		const bool checkProps = !skipProps;
+		if (WorldClass::ProcessLineOfSight(TargetCoors, cam->Source, foundCol, foundEnt, true, checkProps && flt_9BF250 < 0.1f, false, checkProps, false, true, false))
 		{
 			float obstacleTargetDist = (TargetCoors - foundCol.point).Magnitude();
 			float obstacleCamDist = newDistance - obstacleTargetDist;
@@ -1451,7 +1525,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 			}
 			else
 			{
-				if (!WorldClass::ProcessLineOfSight(foundCol.point, cam->Source, foundCol, foundEnt, true, flt_9BF250 < 0.1f, false, true, false, true, false))
+				if (!WorldClass::ProcessLineOfSight(foundCol.point, cam->Source, foundCol, foundEnt, true, checkProps && flt_9BF250 < 0.1f, false, checkProps, false, true, false))
 				{
 					float lessClip = obstacleCamDist - 0.35f;
 					if (lessClip <= 0.9f)
@@ -1481,7 +1555,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 		// If the camera intersects a surface the view can see through the world;
 		// nudge the camera out. SA and LCS unroll this loop.
 		for (int i = 0;
-			i <= 5 && WorldClass::TestSphereAgainstWorld((nearClip * cam->Front) + cam->Source, radius * nearClip, nil, true, true, false, true, false, false);
+			i <= 5 && WorldClass::TestSphereAgainstWorld((nearClip * cam->Front) + cam->Source, radius * nearClip, nil, true, checkProps, false, checkProps, false, false);
 			i++) {
 
 			CVector surfaceCamDist = ms_testSpherePoint.point - cam->Source;
@@ -1655,12 +1729,28 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	if (isSA())
 		*(CVector*)0xB6F018 = TargetCoors;
 
+	// 0x527DC9 is NOPed globally so the mod's own Looking flags survive. For the
+	// special-feature aircraft the native look sets those flags itself, so clear
+	// them here first; the native block runs after this and sets the active one.
+	if (specialFeaturePlane) {
+		cam->LookingBehind = false;
+		cam->LookingLeft = false;
+		cam->LookingRight = false;
+	}
+
 	// SA also runs its own look in CCam::Process right after this function
-	// (LookBehind / sub_520E40) and derives the distance from cam+0xD0, which does
-	// not match the mod camera. Since the mod handles look above, force the game's
-	// look direction forward so it skips its own handling.
-	if (isSA())
-		*(uint32*)0x8CC384 = 3;
+	// (LookBehind / LookLeft / LookRight) and derives the distance from
+	// cam+0xD0. The mod normally force-skips it because the mod handles look
+	// itself. For the special-feature aircraft, however, the mod deliberately
+	// ignores the stick, and vanilla's horizontal turret/camera rotation lives
+	// in that native path; keep it enabled there and publish the direction the
+	// native dispatcher expects (0 behind, 1 left, 2 right, 3 forward).
+	if (isSA()) {
+		// Only look-behind is allowed on the special-feature aircraft. Individual
+		// look left/right is blocked and stays forward; the numpad 4/6 turret axis
+		// is handled separately by the mod's free-look code.
+		*(uint32*)0x8CC384 = (specialFeaturePlane && nativeLookBehind) ? 0 : 3;
+	}
 
 	previousMode = cam->Mode;
 }
