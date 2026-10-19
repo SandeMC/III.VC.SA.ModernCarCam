@@ -245,6 +245,7 @@ void applyProfile(ModernProfile profile, bool vc) {
 			heightIncreaseOnBike = true;
 			cameraAnchoring = 1.0f;    // authentic III/VC rigid anchor
 			cameraStiffness = 1.0f;    // authentic vanilla stiffness
+			cameraPropCollision = false; // Enhanced ignores props by default
 			reverseCam = true;
 			enhancedVC = true;
 		}
