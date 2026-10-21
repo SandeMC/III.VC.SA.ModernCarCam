@@ -1166,11 +1166,18 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	static float modLookBetaSpeed = 0.0f;
 	static bool modLookReturning = false;
 	static bool modLookOwnsBeta = false;
+	// Look distance. It advances with the car's forward travel like the follow
+	// camera's string, instead of being re-read from Source: the collision below
+	// moves Source, and measuring from that clipped point would shrink the look
+	// distance and creep the camera towards the car.
+	static float modLookRadius = -1.0f;
+	static CVector modLookPrevTarget;
 	if (cam->ResetStatics) {
 		modLookBeta = 0.0f;
 		modLookBetaSpeed = 0.0f;
 		modLookReturning = false;
 		modLookOwnsBeta = false;
+		modLookRadius = -1.0f;
 	}
 	if (mouseChangesBeta) {
 		modLookReturning = false;
@@ -1254,6 +1261,30 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 			stringLength = cam->CA_MAX_DISTANCE;
 		else if (stringLength < cam->CA_MIN_DISTANCE)
 			stringLength = cam->CA_MIN_DISTANCE;
+	}
+	if (modLookActive) {
+		if (modLookRadius < 0.0f) {
+			// Engage at the distance the follow camera has right now.
+			modLookRadius = stringLength;
+		} else {
+			// The follow camera trails: its string grows with the car's forward
+			// travel until the clamp. Keep advancing it the same way while the
+			// look owns the camera. Pinning it instead froze the distance for the
+			// whole look, and releasing then made the camera pop outward as the
+			// string caught up in a few frames.
+			CVector forward = car->GetForward();
+			forward.Normalise();
+			const CVector travel = TargetCoors - modLookPrevTarget;
+			modLookRadius += travel.x * forward.x + travel.y * forward.y;
+		}
+		if (modLookRadius < cam->CA_MIN_DISTANCE)
+			modLookRadius = cam->CA_MIN_DISTANCE;
+		if (modLookRadius > cam->CA_MAX_DISTANCE)
+			modLookRadius = cam->CA_MAX_DISTANCE;
+		modLookPrevTarget = TargetCoors;
+		stringLength = modLookRadius;
+	} else {
+		modLookRadius = -1.0f;
 	}
 
 	if (!mouseChangesBeta && !freeLookReturn.returning)
