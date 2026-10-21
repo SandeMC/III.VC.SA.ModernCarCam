@@ -78,6 +78,8 @@ void CheckFirstPersonModCompat(void)
 
 DebugMenuAPI gDebugMenuAPI;
 
+void InitVanillaCameraEnhanceHooks(void);
+
 // -----
 
 // SA: points at CCamera::m_pRwCamera (0xB6F028 + 0x954). The RwCamera near
@@ -219,6 +221,9 @@ void onMasterProfileChange(void) {
 // the game's debug-text-buffer init, so it must still call the original.
 // ---------------------------------------------------------------------------
 void registerDebugMenu() {
+	// Run after ASI initialization so call targets installed by other camera
+	// mods can be captured and chained by our top-down post-processing hook.
+	InitVanillaCameraEnhanceHooks();
 	registerDebugMenuEntries();
 	DebugInitTextBuffer();
 }
@@ -424,11 +429,15 @@ static void OverrideWidescreenFixOptions(void)
 // ---------------------------------------------------------------------------
 typedef int(__thiscall *CCamProcessFn)(void*);
 
-static CCamProcessFn origCCamProcessIII = (CCamProcessFn)0x4596A0;
+// Capture the existing call targets before installing our wrappers. Other
+// camera mods (notably Classic Axis) may already have wrapped one of these
+// call sites; calling the captured target preserves that wrapper and its
+// before/after callbacks.
+static CCamProcessFn origCCamProcessIII_Main = nullptr;
+static CCamProcessFn origCCamProcessIII_Secondary = nullptr;
 
-int __fastcall CCamProcessHookIII(void* thisptr, void*)
+static void ApplyTopDownEnhanceIII(void* thisptr)
 {
-	const int result = origCCamProcessIII(thisptr);
 	if (topDownEnhance) {
 		CCamIII* cam = (CCamIII*)thisptr;
 		if (cam->Mode == 1 || cam->Mode == 2) { // MODE_TOPDOWN / MODE_GTACLASSIC
@@ -459,14 +468,32 @@ int __fastcall CCamProcessHookIII(void* thisptr, void*)
 			}
 		}
 	}
+}
+
+int __fastcall CCamProcessHookIII_Main(void* thisptr, void*)
+{
+	const int result = origCCamProcessIII_Main(thisptr);
+	ApplyTopDownEnhanceIII(thisptr);
+	return result;
+}
+
+int __fastcall CCamProcessHookIII_Secondary(void* thisptr, void*)
+{
+	const int result = origCCamProcessIII_Secondary(thisptr);
+	ApplyTopDownEnhanceIII(thisptr);
 	return result;
 }
 
 void InitVanillaCameraEnhanceHooks(void)
 {
 	if (isIII()) {
-		InjectHook(0x46d5ff, &CCamProcessHookIII, PATCH_NOTHING);
-		InjectHook(0x46d7a0, &CCamProcessHookIII, PATCH_NOTHING);
+		// Keep Classic Axis' CCam::Process event hook intact by wrapping the
+		// call targets already present at these sites, rather than replacing
+		// the first call with a direct call to the game's function.
+		ExtractCall(&origCCamProcessIII_Main, 0x46d5ff);
+		ExtractCall(&origCCamProcessIII_Secondary, 0x46d7a0);
+		InjectHook(0x46d5ff, &CCamProcessHookIII_Main, PATCH_NOTHING);
+		InjectHook(0x46d7a0, &CCamProcessHookIII_Secondary, PATCH_NOTHING);
 	}
 }
 
@@ -573,9 +600,6 @@ DllMain(HINSTANCE hInst, DWORD reason, LPVOID)
 			// hooks are not installed on SA; those address/pad-internals differ.
 		}
 		else return FALSE;
-
-		// Stack the GTA III top-down enhancement onto the game's own camera.
-		InitVanillaCameraEnhanceHooks();
 
 		// III/VC register the menu from their debug-text-buffer init. SA has no
 		// reversed debug-menu call site, so its startup call in WinMain is used
