@@ -210,6 +210,9 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	const bool disableSideLook = DisableVehicleSideLook(car->m_modelIndex, isHeli, isPlane);
 	// Vehicles whose moving part shares the right-stick axes with the camera.
 	const bool specialFeatureVehicle = isSA() && IsSpecialFeatureVehicle(car->m_modelIndex);
+	// Lowriders and any other car with hydraulics installed use the same axes
+	// for the suspension, so they are treated as a special-feature vehicle too.
+	const bool hydraulicsVehicle = VehicleHasHydraulics(car);
 
 	// The special-feature aircraft (Hydra, Andromada) are the cases where vanilla
 	// SA's own look handling is still useful: the right stick drives the moving
@@ -907,33 +910,44 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	stickX = smoothedStickX;
 	stickY = smoothedStickY;
 
-	// The Hydra is the one special-feature vehicle whose horizontal turret keys
-	// (numpad 4/6) are the vanilla camera look. Keep the vertical axis with the
-	// moving part, but let those horizontal keys drive the camera again.
+	// The Hydra is an aircraft, so the general aircraft guard would suppress the
+	// stick entirely. Its horizontal keys are the vanilla camera look; only the
+	// vertical axis belongs to the thrust nozzle.
 	const bool hydraTurretCamera = specialFeatureVehicle && car->m_modelIndex == MI_SA_HYDRA;
 	if (hydraTurretCamera)
 		stickY = 0.0f;
 
-	const bool stickActive = fabsf(stickX) > 0.05f || fabsf(stickY) > 0.05f;
+	// Which axis the vehicle feature owns. The vanilla SA follow camera zeroes
+	// the camera axis that drives the feature, not both: most moving-part
+	// vehicles take the vertical keys, the RC Tiger takes the horizontal ones,
+	// and hydraulics take both (horizontal directly, vertical through the alpha
+	// correction below). The other axis stays available for keyboard free look.
+	const bool specialFeatureHorizontal = specialFeatureVehicle && car->m_modelIndex == 564; // RC Tiger
+	const bool specialFeatureVertical = specialFeatureVehicle && !specialFeatureHorizontal;
+	const bool zeroStickHorizontal = hydraulicsVehicle || specialFeatureHorizontal;
+	const bool zeroStickVertical = hydraulicsVehicle || specialFeatureVertical;
+
+	// Only count the axes that still belong to the camera. Otherwise pressing
+	// the axis a special feature owns would latch the free-look path (and stop
+	// the follow camera) even though the camera itself must ignore it.
+	const bool stickActive =
+		(!zeroStickHorizontal && fabsf(stickX) > 0.05f) ||
+		(!zeroStickVertical && fabsf(stickY) > 0.05f);
 
 	float v103 = cam->FOV * 0.0125f;
 
 	float xMovement = fabsf(stickX) * (v103 * 0.071428575) * stickX * 0.007f * 0.007f;
 	float yMovement = fabsf(stickY) * (v103 * 0.042857144) * stickY * 0.007f * 0.007f;
 
-	if (specialFeatureVehicle) {
-		yMovement = 0.0f;
-		if (!hydraTurretCamera)
-			xMovement = 0.0f;
-	}
-
-	bool correctAlpha = true;
-	if (!isCar || car->m_modelIndex != CarWithHydraulics) {
-		correctAlpha = false;
-	} else {
+	if (zeroStickHorizontal)
 		xMovement = 0.0f;
+	if (zeroStickVertical)
 		yMovement = 0.0f;
-	}
+
+	// The hydraulics suspension uses both axes. The vanilla camera compensates
+	// for the resulting pitch change with the alpha correction below; keep that
+	// behaviour so bouncing the car does not drag the view with it.
+	const bool correctAlpha = hydraulicsVehicle;
 
 	if (!nextDirectionIsForward) {
 		yMovement = 0.0;
@@ -1011,12 +1025,14 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// Gamepad right stick drives the camera directly (the III/VC free-look)
 	// instead of through SA's damped speed blending, which fights the player.
 	// This runs after the mouse block so a stick push is not cancelled by the
-	// mouse hold from the previous frame.
+	// mouse hold from the previous frame. Only the axes that belong to the
+	// camera are applied; the others stay with the vehicle feature.
 	if ((mouseFreeLook || isSA()) && stickActive && !GetDisablePlayerControls(pad) && nextDirectionIsForward &&
-	    (!specialFeatureVehicle || hydraTurretCamera) &&
 	    (!disableSideLook || hydraTurretCamera)) {
-		xMovement = fabsf(stickX) * (v103 * 0.071428575f) * stickX * 0.007f * 0.007f;
-		yMovement = fabsf(stickY) * (v103 * 0.042857144f) * stickY * 0.007f * 0.007f;
+		if (!zeroStickHorizontal)
+			xMovement = fabsf(stickX) * (v103 * 0.071428575f) * stickX * 0.007f * 0.007f;
+		if (!zeroStickVertical)
+			yMovement = fabsf(stickY) * (v103 * 0.042857144f) * stickY * 0.007f * 0.007f;
 		cam->BetaSpeed = 0.0f;
 		cam->AlphaSpeed = 0.0f;
 		targetAlpha = cam->Alpha;
@@ -1302,12 +1318,16 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	bool wantRight = (lookState == 3);
 	// Modern drive-by: aim to the side whenever the camera is angled relative to
 	// the car (not only while a look key is held), like the III/VC lookingRelatively*.
+	// Only do that while the drive-by fire button is held: otherwise the ped leans
+	// out of the window (and turns its upper body) as soon as the free camera is
+	// angled past 30 degrees, even while the player is only looking around.
 	// The fire truck is excluded: its fire button sprays water and the sideways
 	// weapon aim would make it shoot the gun instead.
 	// Aircraft have no drive-by, and publishing the look flag there makes the
 	// game's own camera swing to the side as the aircraft yaws (the flag latches
 	// because 0x527DC9 is NOPed), so skip it for them.
-	if (modernDriveBy && !IsFireTruk(car) && !disableSideLook) {
+	const bool driveByFiring = CarGunFiredHeld();
+	if (modernDriveBy && driveByFiring && !IsFireTruk(car) && !disableSideLook) {
 		const CVector relFwd = Multiply3x3(cam->Front, car->GetMatrix());
 		const float relH = relFwd.Heading();
 		if (relH >= 0.5235987756f && relH <= 2.617993878f)        // > 30 and < 150 deg
@@ -1321,11 +1341,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// Separately configurable for keyboard/mouse and gamepad aiming.
 	static bool lockBehind = false, lockLeft = false, lockRight = false;
 	{
-		// GTA III has no CPad::GetCarGunFired (its mod address is null; see
-		// Pad.cpp), so calling it there jumped to address 0 and crashed the SA
-		// engine on III. III never reports a held car-gun fire in this camera, so
-		// treat it as not firing (short-circuit keeps the null call out).
-		const bool firing = isIII() ? false : pad->GetCarGunFired();
+		const bool firing = driveByFiring;
 		const bool aimingWithPad = pad->GetCarGunLeftRight() != 0 || pad->GetCarGunUpDown() != 0;
 		const bool lock = aimingWithPad ? lockShootDirJOY : lockShootDirKBM;
 		if (!(firing && lock)) {
@@ -1356,7 +1372,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// trafficCamWobble is a multiplier: 1.0 is the shipped gentle strength (70% of
 	// the raw amplitude), 0 = off.
 	float trafficWobbleTarget = 0.0f;
-	if (trafficCamWobble > 0.0f) {
+	if (trafficCamWobble > 0.0f && (isCar || IsMotorcycleVehicle(car))) {
 		const float kImpulseDuration = 0.3f;          // seconds, out and back
 		const float kImpulseAmplitude = 0.7f * 0.05f; // 70% of the raw 0.05 cap
 		static CEntity* trafficNearEntity = nil;      // vehicle whose pass-by already fired
@@ -1475,7 +1491,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 		cam->Source += side * cameraLateralOffset;
 	}
 
-	// (VCS camera shake moved below, after the final camera vectors are built.)
+	// (VCS camera shake moved below, before the final water clamp.)
 
 	cam->m_cvecTargetCoorsForFudgeInter = TargetCoors;
 	float v140 = alphaWithSpeedAccounted + zoomModeAlphaOffset;
@@ -1589,23 +1605,6 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 				cam->Source.z = 24.4f;
 		}
 
-	if (!seeUnderwater) {
-		// Emulates CCam::FixSourceAboveWaterLevel.
-		if (CameraTarget.z >= -2.0f) {
-			float level = -6000.0;
-			// The +0.5 offset is needed in GTA III.
-			if (CWaterLevel::GetWaterLevelNoWaves(cam->Source.x, cam->Source.y, cam->Source.z, &level)) {
-				// GetWaterLevelNoWaves reports any water within 20 m above the
-				// query point, so a raised pool or canal (for example the house
-				// pools above Richman's tunnel) would otherwise pull the camera
-				// up onto a surface that is nowhere near the car. Only keep the
-				// camera above water the car is on or just under.
-				if (level <= CameraTarget.z + WaterClampReach && cam->Source.z < level + 0.5f)
-					cam->Source.z = level + 0.5f;
-			}
-		}
-	}
-
 	cam->Front = TargetCoors - cam->Source;
 
 	cam->GetVectorsReadyForRW();
@@ -1626,6 +1625,15 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 			cam->Source.y += (((r >> 4) & 0xF) - 7) * shakeFactor;
 			cam->Source.z += (((r >> 8) & 0xF) - 7) * shakeFactor;
 		}
+	}
+
+	// KeepCameraOverWater. This runs last, after the shake, so the positional
+	// jolt cannot push the final camera briefly under the surface. The shared
+	// helper also leaves the camera alone under solid cover below the water
+	// surface (raised pools, tunnels), so it cannot yank the view through them.
+	if (KeepCameraAboveWater<WorldClass>(nil, cam->Source)) {
+		cam->Front = TargetCoors - cam->Source;
+		cam->GetVectorsReadyForRW();
 	}
 
 	lookingRelativelyLeft = false;
@@ -1708,7 +1716,10 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 			}
 		}
 	}
-	else if (!isSA() && modernDriveBy && !IsFireTruk(car) && (cam->Mode == MODE_BEHINDBOAT || cam->Mode == MODE_CAMONASTRING) && !isHeli)
+	// The III/VC fallback uses the same lookingRelatively* flags as the vanilla
+	// engine: publish them only while firing, so the drive-by hook does not make
+	// the ped lean out of the window while the player is just looking around.
+	else if (!isSA() && modernDriveBy && driveByFiring && !IsFireTruk(car) && (cam->Mode == MODE_BEHINDBOAT || cam->Mode == MODE_CAMONASTRING) && !isHeli)
 	{
 		CVector hi = Multiply3x3(cam->Front, car->GetMatrix());
 

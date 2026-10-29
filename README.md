@@ -49,12 +49,13 @@ IV is an approximation of IVs feel applied on top of the SA camera; its exact di
 - Every individual part of the camera system can be customized for your own camera presets
 - Faithful GTA III, Vice City and San Andreas vehicle cameras recreations, can add any feature on-top of them
 - Free mouse look from San Andreas, with a smoothed gamepad right stick view
+- Keyboard free look that leaves the look/turret keys to vehicle special features (hydraulics, forklifts, tow trucks, etc.) on the axis each feature uses, while the other axis and the mouse still look around
 - Free turret control from San Andreas (Rhino / Firetruck)
-- Modern drive-by aiming - aim where the camera looks, with an optional per-burst direction lock, separate for keyboard/mouse and gamepad
+- Modern drive-by aiming - while firing, aim where the camera looks, with an optional per-burst direction lock, separate for keyboard/mouse and gamepad
 - Smooth side view - the look left/right/behind transition swings into place instead of snapping
 - Option to disable the side view entirely, automatically enabled on GTA San Andreas when Manual Driveby Refixed is detected in the game folder
 - Configurable free-look reset: both axes together or one axis at a time (vertical first or horizontal first), with an overall duration multiplier and per-axis time shares
-- Configurable camera collision: optionally ignore props such as lampposts and other cars in the normal rear view and collide only with buildings and map geometry (the free camera and side views always ignore props)
+- Configurable camera collision: optionally ignore props such as lampposts and other cars in the normal rear view and collide only with buildings and map geometry (the free camera and side views always ignore props), with near-plane protection so the view cannot leak through walls
 - Configurable dynamic speed FOV (ported from ThirteenAG's Widescreen Fix)
 - Configurable Vice City Stories camera shake (ported from ThirteenAG's Widescreen Fix)
 - Configurable Steering wobble from Vice City
@@ -62,7 +63,7 @@ IV is an approximation of IVs feel applied on top of the SA camera; its exact di
 - Per-vehicle zoom from Vice City as an option
 - Bike passenger height option
 - Elastic string stretch from San Andreas as an option
-- A configurable traffic pass-by wobble
+- A configurable traffic pass-by wobble for cars and motorcycles (from 36 on the game's speed scale by default), disabled on bicycles, boats and aircraft
 - Adjustable stiffness, anchoring and height
 - Enhanced reverse driving camera, with an adjustable delay before it swings
 

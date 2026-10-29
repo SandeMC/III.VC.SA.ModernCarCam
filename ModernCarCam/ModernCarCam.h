@@ -325,6 +325,16 @@ inline bool KeyboardFreeLookAxisEnabled() {
 	return GInputPadInHands();
 }
 
+// True when the vehicle fire button is held. GetCarGunFired is only hooked for
+// GTA III 1.0: the other III builds use addresses that are not installed (as
+// with the rest of the III pad methods), so they report false instead of
+// jumping through a null address.
+inline bool CarGunFiredHeld() {
+	if (isIII() && gtaversion != III_10)
+		return false;
+	return pad0.GetCarGunFired();
+}
+
 // ---------------------------------------------------------------------------
 // Addresses and game globals
 // ---------------------------------------------------------------------------
@@ -454,13 +464,44 @@ constexpr float VCSCamShakeDivisor = 200.0f;
 constexpr float NonSACamShakeScale = 1.5f;
 constexpr float SAEnhancedCamShakeScale = 0.5f;
 
-// KeepCameraOverWater only lifts the camera to water whose surface is at or
-// below the car, plus this small reach for the shoreline and shallow
-// crossings. The engine's CWaterLevel::GetWaterLevelNoWaves reports any water
-// within 20 m above the query point, so without this a raised pool or canal
-// (for example the house pools above Richman's tunnel) reports a surface well
-// above the car and yanks the camera up onto it.
-constexpr float WaterClampReach = 1.0f;
+// Height above the water surface the camera is held at when KeepCameraOverWater
+// is on. 0.5 matches the offset the III/VC engines already use, and keeps the
+// near plane from cutting into the surface.
+constexpr float WaterSurfaceOffset = 0.5f;
+
+// True when the camera is under solid cover that is itself below the water
+// surface: a tunnel under a lake, the house pools above Richman's tunnel, and
+// similar. Lifting the camera to the water level there would push it through
+// the cover, so the water clamp leaves it alone.
+template<class WorldClass>
+inline bool CameraUnderCoverBelowWater(const CVector& source, float waterLevel) {
+	bool foundRoof = false;
+	const float roofZ = WorldClass::FindRoofZFor3DCoord(source.x, source.y, source.z + 0.1f, &foundRoof);
+	return foundRoof && roofZ < waterLevel;
+}
+
+// KeepCameraOverWater, shared by every camera engine. The query is made at the
+// camera itself, not the car: that is the only way the free camera and the side
+// views can be kept above water, and it removes the old car-height thresholds
+// that made the rule change from one situation to the next. Water that is above
+// the camera but behind solid cover is ignored (see above). Returns true when it
+// moved the camera.
+template<class WorldClass>
+inline bool KeepCameraAboveWater(WorldClass*, CVector& source) {
+	if (seeUnderwater)
+		return false;
+
+	float waterLevel = -6000.0f;
+	if (!CWaterLevel::GetWaterLevelNoWaves(source.x, source.y, source.z, &waterLevel))
+		return false;
+	if (source.z >= waterLevel + WaterSurfaceOffset)
+		return false;
+	if (CameraUnderCoverBelowWater<WorldClass>(source, waterLevel))
+		return false;
+
+	source.z = waterLevel + WaterSurfaceOffset;
+	return true;
+}
 
 inline float VCSCamShakeScale(void) {
 	if (cameraProfile != PROFILE_ENHANCED)
@@ -491,7 +532,10 @@ inline bool GetDisablePlayerControls(void* pad) {
 		return *((uint16*)((addr)pad + 0x10E)) != 0;
 	return *((uint8*)((addr)pad + (isIII() ? 0xDF : 0xF0))) != 0;
 }
-#define GetHandlingFlags(veh) *((uint32*)((addr)veh->pHandling + (isIII() ? 0xC8 : 0xCC)))
+// San Andreas caches the handling flags on the vehicle itself (CVehicleSA::
+// m_nHandlingFlags at 0x38C); III/VC only expose them through the handling
+// data.
+#define GetHandlingFlags(veh) *((uint32*)(isSA() ? ((addr)veh + 0x38C) : ((addr)veh->pHandling + (isIII() ? 0xC8 : 0xCC))))
 // SA CAutomobile::m_nWheelsOnGround 0x961; SA CBike::m_nNumWheelsOnGround 0x805.
 #define GetWheelsOnGround(veh) *((uint8*)((addr)veh + (isSA() ? 0x961 : (isIII() ? 0x590 : 0x5C4)))) // In CAutomobile
 #define GetMysteriousWheelRelatedThingBike(veh) *((uint8*)((addr)veh + (isSA() ? 0x805 : 0x4DC))) // In CBike
@@ -517,6 +561,31 @@ inline bool CVehicleIII::IsBikeType(void) { return (GetHandlingFlags(this) & 0x1
 inline bool CVehicleVC::IsHeliType(void) { return (GetHandlingFlags(this) & 0x20000) != 0; }
 inline bool CVehicleVC::IsPlaneType(void) { return (GetHandlingFlags(this) & 0x40000) != 0; }
 inline bool CVehicleVC::IsBikeType(void) { return (GetHandlingFlags(this) & 0x10000) != 0 || IsBike(); }
+
+// True when the vehicle has working hydraulics. San Andreas keeps this in the
+// handling data (tHandlingData::m_bHydraulicInst, handling-flags bit 17), which
+// covers every lowrider instead of hard-coding model ids; III/VC/Re:LCS have a
+// single hydraulics car. The hydraulics keys are the same CarGun/turret axes
+// the camera free look reads, so this is also used to keep the camera from
+// moving while those keys operate the suspension.
+template<class VehicleClass>
+inline bool VehicleHasHydraulics(VehicleClass* car) {
+	if (!car || !car->pHandling || !car->IsCar())
+		return false;
+	if (isSA())
+		return (GetHandlingFlags(car) & 0x20000) != 0;
+	return car->m_modelIndex == CarWithHydraulics;
+}
+
+// True for a motorcycle. San Andreas uses vehicle type 10 for the BMX and the
+// mountain bike; those are bicycles, not motorcycles. III/VC have no bicycles,
+// so every bike there is a motorcycle.
+template<class VehicleClass>
+inline bool IsMotorcycleVehicle(VehicleClass* car) {
+	if (isSA())
+		return *((int32*)((addr)car + 0x590)) == 9; // CVehicleSA::m_nVehicleType
+	return car->IsBike();
+}
 
 // ---------------------------------------------------------------------------
 // Shared maths helpers

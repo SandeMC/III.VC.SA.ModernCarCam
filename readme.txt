@@ -16,6 +16,8 @@ For Widescreen Fix users: this mod takes over the Widescreen Fix's own Speed Sen
 
 For Drive-by mods users:
 - Modernized Driveby features have been reimplemented in this mod; I wouldn't recommend using both mods at once
+- The camera-based drive-by aim only engages while the fire button is held; looking
+  around with the camera does not make the player lean out of the window.
 - Manual Driveby VC - https://libertycity.net/files/gta-vice-city/213323-manual-driveby-vc.html),
   Manual Driveby III - https://libertycity.net/files/gta-3/213322-manual-driveby-iii.html
   and Manual Driveby Refixed (SA) - https://libertycity.net/files/gta-san-andreas/213857-manual-driveby-refixed.html

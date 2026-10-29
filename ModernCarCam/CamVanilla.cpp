@@ -110,6 +110,46 @@ static bool CameraProcessLineOfSight(const CVector& from, const CVector& to,
 	return false;
 }
 
+// SA follow-camera near-plane collision pass. The vanilla engines used to rely
+// on the line clamp alone, which leaves the camera sitting on the surface it hit
+// and lets the near plane cut into walls (the view then shows the void). This
+// pass tests a sphere in front of the camera, pulls the near plane in, and steps
+// the camera back out of any surface it is already intersecting.
+template<class WorldClass>
+static void PushCameraOutOfNearGeometry(CVector& source, const CVector& target, float fov,
+	CEntity* ignoreEntity, bool checkProps)
+{
+	CVector lookDir = target - source;
+	if (lookDir.MagnitudeSqr() <= 0.000001f)
+		return;
+	lookDir.Normalise();
+
+	float nearClip = GetNearPlane();
+	float radius = tanf(fov * DEGTORAD(0.5f)) * GetAspectRatio() * 1.1f;
+	for (int i = 0;
+		i <= 5 && WorldClass::TestSphereAgainstWorld(nearClip * lookDir + source,
+			radius * nearClip, ignoreEntity, true, false, false, checkProps, false, true);
+		i++) {
+
+		const CVector surfaceCamDist = ms_testSpherePoint.point - source;
+		const CVector along = DotProduct(surfaceCamDist, lookDir) * lookDir;
+		float dist = (surfaceCamDist - along).Magnitude() / radius;
+		if (dist > nearClip)
+			dist = nearClip;
+		if (dist < 0.1f)
+			dist = 0.1f;
+		if (nearClip > dist)
+			RwCameraSetNearClipPlane(RwCamera, dist);
+		if (dist == 0.1f)
+			source += (target - source) * 0.3f;
+
+		nearClip = GetNearPlane();
+		radius = tanf(fov * DEGTORAD(0.5f)) * GetAspectRatio() * 1.1f;
+		lookDir = target - source;
+		lookDir.Normalise();
+	}
+}
+
 // Reads the free-look inputs the car camera uses for the behind-boat cameras.
 // Boats previously ignored them entirely, so the free camera (and the mod's
 // smooth side view, which swallows the native look) did nothing there. Returns
@@ -619,6 +659,17 @@ Process_BehindBoat_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleClass* 
 		TargetCoors.z += AmountUp * (0.0f - TheCamera->CarZoomValueSmooth);
 	TargetCoors.z += TheCamera->CarZoomValueSmooth + 0.5f;
 
+	// Near-plane collision, so docks, bridges and other geometry the boat camera
+	// backs into cannot be clipped through. Props are ignored for the free camera
+	// and the side view, as in the car engine.
+	PushCameraOutOfNearGeometry<WorldClass>(cam->Source, TargetCoors, cam->FOV, (CEntity*)car,
+		cameraPropCollision && !freeLookHeld && !freeLookReturn.returning && !sideOwnsBeta);
+
+	// Free-look pitch can point the boat camera downwards past the surface;
+	// KeepCameraOverWater still applies there (the normal placement already sits
+	// just above the water, so this only catches the look).
+	KeepCameraAboveWater<WorldClass>(nil, cam->Source);
+
 	cam->m_cvecTargetCoorsForFudgeInter = TargetCoors;
 	cam->Front = TargetCoors - cam->Source;
 	cam->GetVectorsReadyForRW();
@@ -798,14 +849,26 @@ Process_BehindBoat_VC(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, 
 	// AvoidTheGeometry: keep the camera out of the world (approximated with a
 	// line-of-sight clip, as in the mod's other camera paths).
 	{
+		const bool skipProps = !cameraPropCollision || freeLookHeld ||
+			freeLookReturn.returning || sideOwnsBeta;
 		pIgnoreEntity = (CEntity*)car;
 		CColPoint colPoint;
 		CEntity* entity = nil;
 		if (CameraProcessLineOfSight<WorldClass>(TargetCoors, cam->Source, colPoint, entity, false,
-			!cameraPropCollision || freeLookHeld || freeLookReturn.returning || sideOwnsBeta, false, true))
+			skipProps, false, true))
 			cam->Source = colPoint.point;
 		pIgnoreEntity = nil;
+
+		// Near-plane collision, so the boat camera cannot clip through docks,
+		// bridges or walls behind it.
+		PushCameraOutOfNearGeometry<WorldClass>(cam->Source, TargetCoors, cam->FOV,
+			(CEntity*)car, !skipProps);
 	}
+
+	// Free-look pitch can point the boat camera downwards past the surface;
+	// KeepCameraOverWater still applies there. This runs after the collision
+	// clamp so a hit just under the waterline cannot leave the camera below it.
+	KeepCameraAboveWater<WorldClass>(nil, cam->Source);
 
 	cam->Front = TargetCoors - cam->Source;
 	cam->Front.Normalise();
@@ -869,6 +932,9 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	const bool isPlane = (isIII() && car->m_modelIndex == MI_III_DODO) || (GetHandlingFlags(car) & 0x40000);
 	const bool isCar = car->IsCar() && !isHeli && !isBike && !isPlane;
 	const int index = isCar ? 0 : (isBike ? 1 : (isHeli ? 2 : (isPlane ? 3 : 4)));
+	// The hydraulics keys are the same CarGun/turret axes the free camera reads;
+	// the suspension must keep them. Mouse free look still works.
+	const bool hydraulicsVehicle = VehicleHasHydraulics(car);
 	// Helicopters and the RC Baron yaw with the look-left/right keys, so their
 	// side look must stay off in every game (vanilla does the same in
 	// CCam::Process).
@@ -1098,6 +1164,13 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	if (mouseFreeLook && !GetDisablePlayerControls(pad) && nextDirectionIsForward && !disableSideLook) {
 		float stickX = -(float)pad->GetCarGunLeftRight();
 		float stickY = (float)pad->GetCarGunUpDown();
+
+		// On hydraulics cars these axes operate the suspension. Leave them to
+		// the feature instead of also swinging the camera; the mouse stays free.
+		if (hydraulicsVehicle) {
+			stickX = 0.0f;
+			stickY = 0.0f;
+		}
 
 		// With KeyboardFreeLook off the keyboard must not move the free camera.
 		// GInput tells a pad from a keyboard; without it the game's own look keys
@@ -1705,17 +1778,33 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	// placed position out of geometry along the car-to-camera line. The look owns
 	// Beta (in modLookBeta) and its radius is captured when it starts, so the
 	// clamp can no longer warp the look angle or feed back into the distance.
+	//
+	// The vanilla line clamp alone leaves the camera sitting on the surface it
+	// hit, which lets the near plane cut into walls and show the void. The SA
+	// follow camera prevents that with a second pass around the near plane, so
+	// the same pass is used here: test a sphere in front of the camera, pull the
+	// near plane in, and step the camera back out of any surface it is already
+	// intersecting.
 	{
-		pIgnoreEntity = (CEntity*)car;
-		CColPoint colPoint;
-		CEntity* hitEntity = nil;
 		const bool skipProps = !cameraPropCollision || mouseChangesBeta ||
 			modLookActive || modLookReturning || freeLookReturn.returning ||
 			reverseLookActive || lookNow != 0;
+		const bool checkProps = !skipProps;
+
+		pIgnoreEntity = (CEntity*)car;
+		CColPoint colPoint;
+		CEntity* hitEntity = nil;
 		if (CameraProcessLineOfSight<WorldClass>(TargetCoors, cam->Source, colPoint, hitEntity, false,
-			skipProps, false, true))
+			skipProps, false, true)) {
+			const float obstacleTargetDist = (TargetCoors - colPoint.point).Magnitude();
 			cam->Source = colPoint.point;
+			if (obstacleTargetDist < 1.2f)
+				RwCameraSetNearClipPlane(RwCamera, max(0.05f, obstacleTargetDist - 0.3f));
+		}
 		pIgnoreEntity = nil;
+
+		PushCameraOutOfNearGeometry<WorldClass>(cam->Source, TargetCoors, cam->FOV,
+			(CEntity*)car, checkProps);
 	}
 
 	// ---- Keep a little clearance above the ground and pull the near plane in ----
@@ -1734,19 +1823,31 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 		}
 	}
 
-	// ---- Keep the camera above the water ----
-	if (!seeUnderwater && CameraTarget.z >= -2.0f) {
-		float level = -6000.0f;
-		if (CWaterLevel::GetWaterLevelNoWaves(cam->Source.x, cam->Source.y, cam->Source.z, &level)) {
-			// GetWaterLevelNoWaves reports any water within 20 m above the
-			// query point, so a raised pool or canal (for example the house
-			// pools above Richman's tunnel) would otherwise pull the camera up
-			// onto a surface that is nowhere near the car. Only keep the camera
-			// above water the car is on or just under.
-			if (level <= CameraTarget.z + WaterClampReach && cam->Source.z < level + 0.5f)
-				cam->Source.z = level + 0.5f;
+	// ---- VCS camera shake ----
+	// Ported from ThirteenAG's WidescreenFixesPack
+	// (MIT licensed, see licenses/WidescreenFixesPack.txt). Only cars (not
+	// bikes/boats/air) get it, exactly like the reference. It runs before the
+	// water clamp so the positional jolt cannot leave the final camera under the
+	// surface for a frame.
+	if (vcsCamShake > 0.0f && isCar) {
+		float vehSpeed = car->m_vecMoveSpeed.Magnitude();
+		float shakeStart = (vcsCamShakeStartSpeed >= 0.0f) ? vcsCamShakeStartSpeed : VCSCamShakeStartSpeed;
+		if (vehSpeed > shakeStart) {
+			float shakeFactor = (min(vehSpeed, VCSCamShakeFullSpeed) - shakeStart) / VCSCamShakeRange / VCSCamShakeDivisor * vcsCamShake * VCSCamShakeScale();
+			int r = rand();
+			cam->Source.x += ((r & 0xF) - 7) * shakeFactor;
+			cam->Source.y += (((r >> 4) & 0xF) - 7) * shakeFactor;
+			cam->Source.z += (((r >> 8) & 0xF) - 7) * shakeFactor;
 		}
 	}
+
+	// ---- Keep the camera above the water ----
+	// The shared clamp queries the water under the camera itself (not the car)
+	// and has no car-height thresholds, so the follow camera, the free camera
+	// and the side views all stop at the surface. Solid cover below the water
+	// surface (raised pools, tunnels) is left alone; see
+	// CameraUnderCoverBelowWater.
+	KeepCameraAboveWater<WorldClass>(nil, cam->Source);
 
 	// ---- Slight camera nudge when passing traffic very closely ----
 	// A single out-and-back impulse per vehicle actually passed, not a continuous
@@ -1755,7 +1856,7 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	// trafficCamWobble is a multiplier: 1.0 is the shipped gentle strength (70% of
 	// the raw amplitude), 0 = off.
 	float trafficWobbleTarget = 0.0f;
-	if (trafficCamWobble > 0.0f) {
+	if (trafficCamWobble > 0.0f && (isCar || IsMotorcycleVehicle(car))) {
 		const float kImpulseDuration = 0.3f;          // seconds, out and back
 		const float kImpulseAmplitude = 0.7f * 0.05f; // 70% of the raw 0.05 cap
 		static CEntity* trafficNearEntity = nil;      // vehicle whose pass-by already fired
@@ -1854,23 +1955,6 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	}
 
 	cam->m_cvecTargetCoorsForFudgeInter = TargetCoors;
-	// ---- VCS camera shake ----
-	// Ported from ThirteenAG's WidescreenFixesPack
-	// (MIT licensed, see licenses/WidescreenFixesPack.txt). Applied to the final
-	// camera position, after Front/Up are settled, so it is the positional jolt
-	// the reference gives rather than a rotation of the look-at direction. Only
-	// cars (not bikes/boats/air) get it, exactly like the reference.
-	if (vcsCamShake > 0.0f && isCar) {
-		float vehSpeed = car->m_vecMoveSpeed.Magnitude();
-		float shakeStart = (vcsCamShakeStartSpeed >= 0.0f) ? vcsCamShakeStartSpeed : VCSCamShakeStartSpeed;
-		if (vehSpeed > shakeStart) {
-			float shakeFactor = (min(vehSpeed, VCSCamShakeFullSpeed) - shakeStart) / VCSCamShakeRange / VCSCamShakeDivisor * vcsCamShake * VCSCamShakeScale();
-			int r = rand();
-			cam->Source.x += ((r & 0xF) - 7) * shakeFactor;
-			cam->Source.y += (((r >> 4) & 0xF) - 7) * shakeFactor;
-			cam->Source.z += (((r >> 8) & 0xF) - 7) * shakeFactor;
-		}
-	}
 
 	lookingRelativelyLeft = false;
 	lookingRelativelyRight = false;
@@ -1934,7 +2018,10 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 				mat.UpdateRW();
 			}
 		}
-	} else if (modernDriveBy && !isHeli) {
+	} else if (modernDriveBy && CarGunFiredHeld() && !isHeli) {
+		// Only while firing: the drive-by hook treats lookingRelatively* as a
+		// real look direction, so publishing it from the camera angle alone made
+		// the player lean out of the window while only looking around.
 		CVector hi = Multiply3x3(cam->Front, car->GetMatrix());
 		if (hi.Heading() >= 0.5235987756f && hi.Heading() <= 2.617993878f)
 			lookingRelativelyLeft = true;

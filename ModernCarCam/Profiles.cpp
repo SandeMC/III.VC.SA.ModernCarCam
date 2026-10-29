@@ -176,8 +176,12 @@ void applyProfile(ModernProfile profile, bool vc) {
 	heightIncreaseOnBike = vc;
 	fixTheBug = true;
 	trafficCamWobble = 0.0f;           // a mod effect: not part of any vanilla camera, opt-in
-	trafficCamWobbleMinSpeed = 0.15f;  // forward speed (m/tick) needed to trigger a pass-by nudge
-	trafficCamWobbleFullSpeed = 0.5f;  // speed at which the nudge reaches its max multiplier
+	// The traffic pass-by nudge is for cars and motorcycles only. It starts at
+	// 36 on GTA's 180-point speed scale and reaches full strength at 90, so it
+	// is noticeable in ordinary city traffic without firing while cruising
+	// slowly.
+	trafficCamWobbleMinSpeed = 0.2f;
+	trafficCamWobbleFullSpeed = 0.5f;
 	trafficCamWobbleMaxMultiplier = 2.0f; // nudge strength at full speed (before TrafficCamWobble)
 	reverseCamDelay = 0.5f;            // seconds of reversing before the reverse camera swings
 	dynamicSpeedFOVDecay = 0.98f;      // per-step FOV decay (Enhanced/SA feel)

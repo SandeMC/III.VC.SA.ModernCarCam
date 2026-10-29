@@ -14,8 +14,10 @@ addr glrAddress = AddressByVersion<addr>(0x4932C0, 0, 0, 0x4AAC60, 0, 0, 0x53FE1
 addr gllAddress = AddressByVersion<addr>(0x493290, 0, 0, 0x4AAC90, 0, 0, 0x53FDD0);
 addr gcglrAddress = AddressByVersion<addr>(0x4930C0, 0, 0, 0x4AAEB0, 0, 0, 0x53FC50);
 addr gcgudAddress = AddressByVersion<addr>(0x493070, 0, 0, 0x4AAF00, 0, 0, 0x53FC10);
-// GetCarGunFired only exists on Vice City and San Andreas.
-addr gcgfAddress = AddressByVersion<addr>(0, 0, 0, 0x4AAA60, 0, 0, 0x53FF90);
+// GetCarGunFired exists on GTA III, Vice City and San Andreas. III 1.0 is
+// 0x493490; the other III builds are not hooked here (as with the other pad
+// methods above).
+addr gcgfAddress = AddressByVersion<addr>(0x493490, 0, 0, 0x4AAA60, 0, 0, 0x53FF90);
 addr gsudAddress = AddressByVersion<addr>(0x492FF0, 0, 0, 0x4AAF50, 0, 0, 0x53FBD0);
 addr gslrAddress = AddressByVersion<addr>(0x492F70, 0, 0, 0x4AAFD0, 0, 0, 0x53FB80);
 
