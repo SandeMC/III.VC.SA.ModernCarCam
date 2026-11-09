@@ -1,5 +1,6 @@
 # Scratch files
 .scratch/
+.agents/
 
 # Build artifacts
 Release/
