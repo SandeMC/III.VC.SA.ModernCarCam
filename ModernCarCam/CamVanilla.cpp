@@ -75,12 +75,11 @@ static void PushCameraOutOfNearGeometry(CVector& source, const CVector& target, 
 // trailing hold counts as held); the caller applies them to its own state.
 template<class CameraClass, class CamClass>
 static void ReadBoatFreeLookInput(CameraClass* TheCamera, CamClass* cam, CPad* pad,
-	int index, bool vehicleMoving, bool& freeLookHeld, float& betaDelta, float& alphaDelta)
+	int index, bool& freeLookHeld, float& betaDelta, float& alphaDelta)
 {
 	static float stepsLeftToChangeBetaByMouse = 0.0f;
 	static float smoothedStickX = 0.0f;
 	static float smoothedStickY = 0.0f;
-	bool inputThisFrame = false;
 
 	freeLookHeld = false;
 	betaDelta = 0.0f;
@@ -112,7 +111,6 @@ static void ReadBoatFreeLookInput(CameraClass* TheCamera, CamClass* cam, CPad* p
 		betaDelta += mouseX * lookScale * GetMouseAccel(TheCamera) * sensitivity;
 		stepsLeftToChangeBetaByMouse = 50.0f;
 		freeLookHeld = true;
-		inputThisFrame = true;
 	} else if (stepsLeftToChangeBetaByMouse > 0.0f) {
 		stepsLeftToChangeBetaByMouse = max(0.0f, stepsLeftToChangeBetaByMouse - ms_fTimeStep);
 		freeLookHeld = true;
@@ -151,14 +149,6 @@ static void ReadBoatFreeLookInput(CameraClass* TheCamera, CamClass* cam, CPad* p
 		alphaDelta -= yMovement * sensitivity;
 		stepsLeftToChangeBetaByMouse = 50.0f;
 		freeLookHeld = true;
-		inputThisFrame = true;
-	}
-
-	// A moving boat should not keep the trailing input hold; release starts the
-	// return immediately, as in the car engines.
-	if (vehicleMoving && !inputThisFrame && stepsLeftToChangeBetaByMouse > 0.0f) {
-		stepsLeftToChangeBetaByMouse = 0.0f;
-		freeLookHeld = false;
 	}
 }
 
@@ -509,7 +499,7 @@ Process_BehindBoat_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleClass* 
 	bool freeLookHeld;
 	float lookBetaDelta, lookAlphaDelta;
 	const bool moving = car->m_vecMoveSpeed.Magnitude2D() > 0.1f;
-	ReadBoatFreeLookInput(TheCamera, cam, &pad0, 4, moving,
+	ReadBoatFreeLookInput(TheCamera, cam, &pad0, 4,
 		freeLookHeld, lookBetaDelta, lookAlphaDelta);
 
 	const bool stationary = !moving;
@@ -733,7 +723,7 @@ Process_BehindBoat_VC(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, 
 	bool freeLookHeld;
 	float lookBetaDelta, lookAlphaDelta;
 	const bool moving = car->m_vecMoveSpeed.Magnitude2D() > 0.1f;
-	ReadBoatFreeLookInput(TheCamera, cam, &pad0, index, moving,
+	ReadBoatFreeLookInput(TheCamera, cam, &pad0, index,
 		freeLookHeld, lookBetaDelta, lookAlphaDelta);
 
 	const bool stationary = !moving;
@@ -821,8 +811,28 @@ Process_BehindBoat_VC(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, 
 	// when the side view is disabled entirely.
 	gFreeLookOwnsLR = sideEnabled || disableSideView || lookOwns || freeLookReturn.returning;
 
-	cam->Source = (TheCamera->CarZoomValueSmooth + boatSize) * CVector(-cosf(cam->Beta), -sinf(cam->Beta), 0.0f) + TargetCoors;
-	cam->Source.z = WaterLevelBuffered + WATER_Z_ADDITION + (boatDimensions.z / 2.0f + MAX_HEIGHT_UP) * sinf(cam->Alpha);
+	const float horizDist = TheCamera->CarZoomValueSmooth + boatSize;
+	if (lookOwns || freeLookReturn.returning) {
+		// Free look rotates the camera around the boat at a constant 3D radius.
+		// The old placement only moved Source.z (up to 15 m), so raising the view
+		// made the camera recede upward instead of staying on the orbit.
+		const CVector baseOffset(
+			-cosf(cam->Beta) * horizDist,
+			-sinf(cam->Beta) * horizDist,
+			WaterLevelBuffered + WATER_Z_ADDITION - TargetCoors.z);
+		const float radius = baseOffset.Magnitude();
+		if (radius > 0.001f) {
+			const float baseElevation = asinf(clamp(baseOffset.z / radius, -1.0f, 1.0f));
+			const float elevation = clamp(baseElevation + cam->Alpha,
+				-BoatFreeLookPitchLimit, BoatFreeLookPitchLimit);
+			cam->Source.x = TargetCoors.x - cosf(cam->Beta) * radius * cosf(elevation);
+			cam->Source.y = TargetCoors.y - sinf(cam->Beta) * radius * cosf(elevation);
+			cam->Source.z = TargetCoors.z + radius * sinf(elevation);
+		}
+	} else {
+		cam->Source = horizDist * CVector(-cosf(cam->Beta), -sinf(cam->Beta), 0.0f) + TargetCoors;
+		cam->Source.z = WaterLevelBuffered + WATER_Z_ADDITION + (boatDimensions.z / 2.0f + MAX_HEIGHT_UP) * sinf(cam->Alpha);
+	}
 
 	cam->m_cvecTargetCoorsForFudgeInter = TargetCoors;
 
@@ -1067,9 +1077,43 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 		}
 	}
 
-	cam->CA_MAX_DISTANCE = BaseDist + 0.1f + zoomValue + extraDist + CameraDistanceOffsetForZoom((int)TheCamera->CarZoomIndicator);
+	// ---- Base distance ----
+	// The vanilla profile keeps the authentic BaseDist. For a non-vanilla
+	// distance profile the SA follow engine uses the selected distance table;
+	// mirror that here so enabling CameraAnchoring does not jump the distance
+	// to the vanilla formula (LCS, SA and Custom profiles were affected).
+	float maxDistance;
+	if (distanceProfile != PROFILE_VANILLA) {
+		const float (*distanceTable)[15] = (distanceProfile == PROFILE_LCS) ? CARCAM_SET_LCS :
+			((distanceProfile == PROFILE_SA) ? CARCAM_SET_SA : CARCAM_SET_CUSTOM);
+		uint8 tableRow = 0;
+		if (distanceProfile == PROFILE_LCS && car->m_modelIndex == FireTruk)
+			tableRow = 7;
+		else if (car->m_modelIndex == RcBandit || (isVC() && !isReLCS && car->m_modelIndex == MI_VC_RCBARON))
+			tableRow = 5;
+		else if (isVC() && (car->m_modelIndex == RcRaider || car->m_modelIndex == RcGoblin))
+			tableRow = 6;
+		else if (car->IsBoat())
+			tableRow = 4;
+		else if (isBike)
+			tableRow = 1;
+		else if (isPlane)
+			tableRow = 3;
+		else if (isHeli)
+			tableRow = 2;
+
+		const float approxCarLength = 2.0f * fabsf(carCol->boundingBox.min.y);
+		const float genericOffset = distanceTable[0][1];
+		const float perVehicleOffset = distanceTable[tableRow][1];
+		const float zoomOffset = genericOffset +
+			(perVehicleOffset - genericOffset) * max(0.0f, vehicleSpecificZoom);
+		maxDistance = zoomValue + zoomOffset + approxCarLength;
+	} else {
+		maxDistance = BaseDist + 0.1f + zoomValue;
+	}
+	maxDistance += extraDist + CameraDistanceOffsetForZoom((int)TheCamera->CarZoomIndicator);
+	cam->CA_MAX_DISTANCE = maxDistance * cameraDistanceScale;
 	cam->CA_MIN_DISTANCE = (cameraMinDistance >= 0.0f) ? cameraMinDistance : min(BaseDist * 0.6f, 3.5f);
-	cam->CA_MAX_DISTANCE *= cameraDistanceScale;
 	if (cam->CA_MIN_DISTANCE > cam->CA_MAX_DISTANCE)
 		cam->CA_MIN_DISTANCE = cam->CA_MAX_DISTANCE - 0.05f;
 
@@ -1294,10 +1338,13 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	// While the car is moving, end the trailing 50-step input hold as soon as
 	// the mouse/stick stops; the return starts immediately.
 	const bool vehicleStationary = car->m_vecMoveSpeed.Magnitude2D() <= 0.1f;
-	if (stepsLeftToChangeBetaByMouse > 0.0f && !vehicleStationary)
-		stepsLeftToChangeBetaByMouse = 0.0f;
 	if (lookInputThisFrame && !freeLookReturn.wasActive)
 		freeLookFromStandstill = vehicleStationary;
+	// A look taken at a standstill must not spend the trailing input hold when
+	// the car starts moving; a look taken while driving keeps the vanilla
+	// 50-step hold so the player can keep the raised angle for a moment.
+	if (stepsLeftToChangeBetaByMouse > 0.0f && !vehicleStationary && freeLookFromStandstill)
+		stepsLeftToChangeBetaByMouse = 0.0f;
 
 	// ---- Free-look return ----
 	// The stock 50-step input hold still applies. After it, a stationary car

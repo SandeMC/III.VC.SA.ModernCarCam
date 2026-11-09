@@ -236,13 +236,13 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	const bool nativeLookSide = specialFeaturePlane && nativeLookAllowed &&
 		(pad->GetLookLeft() || pad->GetLookRight());
 	const bool nativeLookActive = nativeLookBehind || nativeLookSide;
-	// DisableSideView removes the side view entirely (all games). The free
-	// camera and drive-by aiming stay available; only look left/right/behind is
-	// ignored, which is what the manual drive-by overhaul expects.
-	const bool lookCamInput = !fpActive && !disableSideLook && !disableSideView;
+	// DisableSideView removes the side view entirely (all games). Aircraft yaw
+	// with the look-left/right keys, so those two keys stay disabled there; look
+	// behind is a separate key and is still allowed on aircraft.
+	const bool lookCamInput = !fpActive && !disableSideView;
 	const bool lookBehindCar = lookCamInput && pad->GetLookBehindForCar();
-	const bool lookLeftKey = lookCamInput && pad->GetLookLeft();
-	const bool lookRightKey = lookCamInput && pad->GetLookRight();
+	const bool lookLeftKey = lookCamInput && !disableSideLook && pad->GetLookLeft();
+	const bool lookRightKey = lookCamInput && !disableSideLook && pad->GetLookRight();
 	const bool anyLookInput = lookBehindCar || lookLeftKey || lookRightKey;
 
 	// True while the follow camera is in control: no look input is held and it
@@ -800,7 +800,14 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 
 	float carPosChange = (TargetCoors - m_aTargetHistoryPosTwo).Magnitude();
 	if (carPosChange < newDistance && newDistance > minDistForThisCar) {
-		newDistance = max(minDistForThisCar, carPosChange);
+		// Do not let the follow string collapse onto the car when the car moves
+		// toward the camera while the player rotates it: the vanilla-table
+		// minimum (3.5 m) ends up right against the windscreen. Keep at least
+		// the car's own length between the target and the camera, clamped so
+		// this can never push the camera farther out than its current distance.
+		float shrinkFloor = max(minDistForThisCar, approxCarLength);
+		shrinkFloor = min(shrinkFloor, newDistance);
+		newDistance = max(shrinkFloor, carPosChange);
 	}
 	float maxAlphaAllowed = (maxPitchAngle >= 0.0f) ? maxPitchAngle : ANGLES_CARCAM_SET[camSetArrPos][13];
 
@@ -1065,10 +1072,13 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// input hold: it made the camera wait ~1 s before it even started to return.
 	// The moment the mouse/stick stops, the return takes over.
 	const bool vehicleStationary = car->m_vecMoveSpeed.Magnitude2D() <= 0.1f;
-	if (stepsLeftToChangeBetaByMouse > 0.0f && !vehicleStationary)
-		stepsLeftToChangeBetaByMouse = 0.0f;
 	if (lookInputThisFrame && !freeLookReturn.wasActive)
 		freeLookFromStandstill = vehicleStationary;
+	// A look taken at a standstill must not spend the trailing input hold when
+	// the car starts moving; a look taken while driving keeps the vanilla
+	// 50-step hold so the player can keep the raised angle for a moment.
+	if (stepsLeftToChangeBetaByMouse > 0.0f && !vehicleStationary && freeLookFromStandstill)
+		stepsLeftToChangeBetaByMouse = 0.0f;
 
 	// Free look holds its angle while the car is stationary (SA/newer-game
 	// behaviour); the smooth return starts when the car moves. The stock

@@ -61,9 +61,13 @@ still pending (no game install is used by the agent):
   FLA-patched `AddSimpleModel` immediates), with safe fallbacks;
 - free look latches its radius instead of snapping to `CA_MAX_DISTANCE`;
 - free look holds while stationary; a look taken at a standstill returns at a
-  speed-scaled pace when pulling away, while a look taken during driving
-  returns at the normal pace (all engines: SA follow, vanilla car, both boat
-  cameras);
+  speed-scaled pace when pulling away, while a look taken during driving keeps
+  the vanilla trailing hold and the normal return pace (all engines);
+- aircraft look-behind is allowed with CameraAnchoring 0; left/right stay
+  disabled on aircraft because those keys yaw;
+- the VC-table string distance has a car-length shrink floor, and the boat
+  free-look orbit keeps a constant radius; CameraAnchoring on non-vanilla
+  distance profiles uses the selected distance table;
 - LCS/VCS boat free-look uses the SA pitch limit, not the LCS follow limit;
 - free-look collision checks map objects with a small-prop filter (III/VC by
   model name, SA by generated name-hash list plus a size fallback), always runs,
