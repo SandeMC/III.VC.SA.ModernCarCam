@@ -54,7 +54,7 @@ IV is an approximation of IVs feel applied on top of the SA camera; its exact di
 - Modern drive-by aiming - while firing, aim where the camera looks, with an optional per-burst direction lock, separate for keyboard/mouse and gamepad
 - Smooth side view - the look left/right/behind transition swings into place instead of snapping
 - Option to disable the side view entirely, automatically enabled on GTA San Andreas when Manual Driveby Refixed is detected in the game folder
-- Configurable free-look reset: the camera keeps the angle you left it at while the vehicle is stationary; when pulling away from a standstill the return rate follows how fast you are going (tunable with `CameraResetFromStop`), while a look taken during driving returns at the normal pace. Both axes together or one axis at a time (vertical first or horizontal first), with an overall duration multiplier and per-axis time shares
+- Configurable free-look reset: the camera keeps the angle you left it at while the vehicle is stationary; when pulling away from a standstill the return rate follows how fast you are going, while a look taken during driving returns at the normal pace. Both axes together or one axis at a time (vertical first or horizontal first), with an overall duration multiplier and per-axis time shares
 - Configurable camera collision: optionally ignore props such as lampposts and other cars in the normal rear view and collide only with buildings and map geometry (the free camera and side views always ignore props), with near-plane protection so the view cannot leak through walls
 - Configurable dynamic speed FOV (ported from ThirteenAG's Widescreen Fix)
 - Configurable Vice City Stories camera shake (ported from ThirteenAG's Widescreen Fix)
