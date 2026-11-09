@@ -9,6 +9,7 @@
 #include "debugmenu_public.h"
 
 #include "ModernCarCam.h"
+#include "SAProps.h"
 
 // ---------------------------------------------------------------------------
 // ModernCarCam - a universal vehicle camera for GTA III and GTA Vice City.
@@ -169,7 +170,97 @@ void* RwCameraSetNearClipPlane(void* camera, float nearClip) {
 addr posAddress = AddressByVersion<addr>(0x57C840, 0, 0, 0x5F9DA0, 0, 0);
 WRAPPER void cDMAudio::PlayOneShot(int32 audioEntity, uint16 oneShot, float volume) { EAXJMP(posAddress); }
 
-CBaseModelInfo** CModelInfo::ms_modelInfoPtrs = AddressByVersion<CBaseModelInfo **>(0x83D408, 0, 0, 0x92D4C8, 0, 0, 0xA9B0C8);
+// CModelInfo::ms_modelInfoPtrs is a runtime pointer, not a fixed array base:
+// fastman92 Limit Adjuster's Apply ID Limit patch moves the array and patches
+// the immediate in CModelInfo::SetModelInfo. On SA 1.0 that setter is the unique
+//     mov eax, [esp+8]; mov ecx, [esp+4];
+//     mov ds:ms_modelInfoPtrs[ecx*4], eax; ret
+// pattern. Scanning the instruction and reading its immediate gives the live
+// base with or without FLA; a hard-coded 0xA9B0C8 gives FLA the stale array and
+// makes GetColModel() fail, which stops the camera in CamSA.
+// (fastman92/plugin-sdk compatibility: https://github.com/DK22Pac/plugin-sdk/issues/38)
+CBaseModelInfo** CModelInfo::GetModelInfoPtrs() {
+	static addr setter = 0;
+	static int setterImmOffset = 0;
+	static bool scanned = false;
+	if (!scanned && gtaversion != -1) {
+		scanned = true;
+		if (isSA()) {
+			static const unsigned char signature[16] = {
+				0x8B, 0x44, 0x24, 0x08, 0x8B, 0x4C, 0x24, 0x04,
+				0x89, 0x04, 0x8D, 0x00, 0x00, 0x00, 0x00, 0xC3
+			};
+			static const char mask[] = "xxxxxxxxxxx????x";
+			setter = FindPattern(signature, mask, 16);
+			setterImmOffset = 11;
+
+			// Fallback for the supported SA 1.0 US layout: verify the opcode
+			// before trusting the absolute address, so a different build falls
+			// through to the default base instead of reading a random immediate.
+			if (!setter) {
+				const unsigned char* p = (const unsigned char*)0x4C5538;
+				if (p[0] == 0x89 && p[1] == 0x04 && p[2] == 0x8D && p[7] == 0xC3) {
+					setter = 0x4C5538;
+					setterImmOffset = 3;
+				}
+			}
+		} else if (isIII() && is10()) {
+			// FLA's III 1.0 ID-limit patch rewrites the immediate in
+			// CModelInfo::AddSimpleModel at 0x50B964 (mov [ebx*4+imm], ebp).
+			// Reading it works with and without FLA.
+			const unsigned char* p = (const unsigned char*)0x50B964;
+			if (p[0] == 0x89 && p[1] == 0x2C && p[2] == 0x9D) {
+				setter = 0x50B964;
+				setterImmOffset = 3;
+			}
+		} else if (isVC() && is10()) {
+			// FLA's VC 1.0 ID-limit patch rewrites the immediate in the same
+			// model-info setter family at 0x55F5BF (mov [ebx*4+imm], eax).
+			const unsigned char* p = (const unsigned char*)0x55F5BF;
+			if (p[0] == 0x89 && p[1] == 0x04 && p[2] == 0x9D) {
+				setter = 0x55F5BF;
+				setterImmOffset = 3;
+			}
+		}
+	}
+
+	if (setter)
+		return *(CBaseModelInfo***)((addr)setter + setterImmOffset);
+
+	// No usable instruction (e.g. a game build the hook does not support, or an
+	// ASI loader that loaded this mod before FLA): use the executable's default
+	// array base.
+	return (CBaseModelInfo**)AddressByVersion<addr>(0x83D408, 0, 0, 0x92D4C8, 0, 0, 0xA9B0C8);
+}
+
+CBaseModelInfo* CModelInfo::GetModelInfo(int id) {
+	CBaseModelInfo** ptrs = GetModelInfoPtrs();
+	return ptrs ? ptrs[id] : nil;
+}
+
+addr CModelInfo::GetModelInfoPtr(int id) {
+	CBaseModelInfo** ptrs = GetModelInfoPtrs();
+	return ptrs ? (addr)ptrs[id] : 0;
+}
+
+// SA stores the uppercase model-name CRC32 in CBaseModelInfo at +0x4. The
+// generated list covers the vanilla street furniture, vegetation and barrier
+// models; custom models that reuse one of those names are covered as well.
+bool IsSACameraPropModelHash(uint32 hash) {
+	int lo = 0;
+	int hi = kSACameraPropHashCount - 1;
+	while (lo <= hi) {
+		const int mid = (lo + hi) / 2;
+		const uint32 value = kSACameraPropHashes[mid];
+		if (value == hash)
+			return true;
+		if (value < hash)
+			lo = mid + 1;
+		else
+			hi = mid - 1;
+	}
+	return false;
+}
 
 addr attachAddress = AddressByVersion<addr>(0x4B8DD0, 0, 0, 0x4DFA40, 0, 0);
 addr updateRwAddress = AddressByVersion<addr>(0x4B8EC0, 0, 0, 0x4DF8F0, 0, 0);

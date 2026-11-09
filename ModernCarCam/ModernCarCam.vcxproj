@@ -24,6 +24,7 @@
     <ClInclude Include="ModernCarCam.h" />
     <ClInclude Include="ModuleList.hpp" />
     <ClInclude Include="Pad.h" />
+    <ClInclude Include="SAProps.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>16.0</VCProjectVersion>

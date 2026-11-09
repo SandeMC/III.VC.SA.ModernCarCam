@@ -306,15 +306,14 @@ static_assert(sizeof(CBaseModelInfo) == 0x30, "CBaseModelInfo: error");
 
 class CModelInfo
 {
-	static CBaseModelInfo** ms_modelInfoPtrs;
 public:
-	static CBaseModelInfo* GetModelInfo(int id) {
-		return ms_modelInfoPtrs[id];
-	}
+	// The array is a runtime pointer: fastman92's Apply ID Limit patch moves it.
+	// Resolved from the game code (see ModernCarCam.cpp); never cache the base
+	// address in a translation unit.
+	static CBaseModelInfo** GetModelInfoPtrs();
+	static CBaseModelInfo* GetModelInfo(int id);
 	// Raw address of a model info entry (used by the San Andreas layouts).
-	static addr GetModelInfoPtr(int id) {
-		return (addr)ms_modelInfoPtrs[id];
-	}
+	static addr GetModelInfoPtr(int id);
 };
 
 struct RwMatrix

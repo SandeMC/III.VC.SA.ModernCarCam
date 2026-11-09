@@ -151,6 +151,44 @@ InjectHook(AT address, HT hook, unsigned int nType = PATCH_NOTHING)
 		VirtualProtect((void*)address, 5, dwProtect[0], &dwProtect[1]);
 }
 
+// Scan the main module's executable sections for a byte pattern. mask uses 'x'
+// for an exact byte and '?' for a wildcard. The game addresses are stable
+// executables, but data pointers such as CModelInfo::ms_modelInfoPtrs can be
+// moved by fastman92 Limit Adjuster; scanning the instruction that references
+// the array lets the mod read the runtime pointer instead of a stale constant.
+inline addr FindPattern(const unsigned char* pattern, const char* mask, int length)
+{
+	HMODULE module = GetModuleHandle(nullptr);
+	if (!module)
+		return 0;
+
+	const auto dos = (IMAGE_DOS_HEADER*)module;
+	const auto nt = (IMAGE_NT_HEADERS*)((addr)module + dos->e_lfanew);
+	const auto section = IMAGE_FIRST_SECTION(nt);
+	for (int i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+		if (!(section[i].Characteristics & IMAGE_SCN_MEM_EXECUTE))
+			continue;
+
+		const auto start = (const unsigned char*)module + section[i].VirtualAddress;
+		const size_t size = section[i].Misc.VirtualSize;
+		if (size < (size_t)length)
+			continue;
+
+		for (size_t j = 0; j + (size_t)length <= size; ++j) {
+			bool match = true;
+			for (int k = 0; k < length; ++k) {
+				if (mask[k] != '?' && start[j + k] != pattern[k]) {
+					match = false;
+					break;
+				}
+			}
+			if (match)
+				return (addr)(start + j);
+		}
+	}
+	return 0;
+}
+
 inline void ExtractCall(void* dst, addr a)
 {
 	*(addr*)dst = (addr)(*(addr*)(a + 1) + a + 5);
