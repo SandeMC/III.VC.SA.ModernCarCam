@@ -1,13 +1,17 @@
+# Scratch files
+.scratch/
+
 # Build artifacts
 Release/
 Debug/
 .vs/
 *.user
 
-# Reference material (not part of the mod)
+# Third-party reference material (not part of the mod)
 *.exe
 *.zip
 .kilo/
+fastman92 limit adjuster*/
 
 # IDA databases
 *.i64
