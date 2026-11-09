@@ -142,6 +142,7 @@ void registerDebugMenuEntries(void)
 	DebugMenuAddVar("ModernCarCam|Camera", "Free-look return speed (x)", &cameraReturnSpeed, nil, 0.05f, 0.0f, 5.0f);
 	DebugMenuAddVar("ModernCarCam|Camera", "Free-look return time (s)", &cameraReturnTime, nil, 0.05f, 0.0f, 5.0f);
 	DebugMenuAddVar("ModernCarCam|Camera", "Free-look reset time (x)", &cameraResetTime, nil, 0.05f, 0.05f, 5.0f);
+	DebugMenuAddVar("ModernCarCam|Camera", "Pull-away reset speed (x)", &cameraResetFromStop, nil, 0.05f, 0.05f, 5.0f);
 	{
 		static const char* resetOrderNames[] = { "Both axes", "Vertical first", "Horizontal first" };
 		DebugMenuAddInt8("ModernCarCam|Camera", "Free-look reset order", (int8_t*)&cameraResetOrder, nil, 1, 0, 2, resetOrderNames);

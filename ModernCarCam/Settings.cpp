@@ -54,6 +54,7 @@ float cameraReturnSpeed = 1.0f;
 float cameraReturnTime = 0.5f;
 int8_t cameraResetOrder = 0;            // 0 = both axes, 1 = vertical first, 2 = horizontal first
 float cameraResetTime = 1.0f;           // multiplier on the total reset duration
+float cameraResetFromStop = 1.0f;       // multiplier on the pull-away return rate
 float cameraResetVerticalTime = 1.0f;   // per-axis share (per-axis modes)
 float cameraResetHorizontalTime = 1.0f; // per-axis share (per-axis modes)
 bool modernTurretControl = true;
@@ -707,6 +708,7 @@ void LoadSettings()
 	if (ReadMultiplier("CameraReturnSpeed", value))     cameraReturnSpeed = value;
 	if (ReadMultiplier("CameraReturnTime", value))      cameraReturnTime = value;
 	if (ReadMultiplier("CameraResetTime", value))       cameraResetTime = max(0.05f, value);
+	if (ReadMultiplier("CameraResetFromStop", value))   cameraResetFromStop = max(0.05f, value);
 	if (ReadMultiplier("CameraResetVerticalTime", value))   cameraResetVerticalTime = max(0.0f, value);
 	if (ReadMultiplier("CameraResetHorizontalTime", value)) cameraResetHorizontalTime = max(0.0f, value);
 	if (ReadMultiplier("CameraResetOrder", value))      cameraResetOrder = clamp((int)(value + 0.5f), 0, 2);

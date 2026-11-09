@@ -147,6 +147,7 @@ extern bool keyboardFreeLook;               // let the game's keyboard look/turr
 extern bool cameraPropCollision;            // camera collides with props (lampposts, cars); false = buildings/map geometry only
 extern int8_t cameraResetOrder;             // free-look reset: 0 both, 1 vertical first, 2 horizontal first
 extern float cameraResetTime;               // multiplier on the total free-look reset duration (1 = current)
+extern float cameraResetFromStop;           // multiplier on the pull-away-from-stop return rate
 extern float cameraResetVerticalTime;       // per-axis share of the reset (per-axis modes only)
 extern float cameraResetHorizontalTime;     // per-axis share of the reset (per-axis modes only)
 
@@ -464,6 +465,201 @@ constexpr float VCSCamShakeDivisor = 200.0f;
 constexpr float NonSACamShakeScale = 1.5f;
 constexpr float SAEnhancedCamShakeScale = 0.5f;
 
+// ---------------------------------------------------------------------------
+// Entity / collision helpers shared by the two camera engines.
+//
+// The game layouts for CEntity differ on SA, so every access goes through a
+// per-game cast instead of reading the III/VC CEntity fields directly.
+// ---------------------------------------------------------------------------
+inline int EntityGetModelIndex(CEntity* entity) {
+	if (!entity)
+		return -1;
+	return isSA() ? ((CEntitySA*)entity)->GetModelIndex() : entity->GetModelIndex();
+}
+
+inline bool EntityIsPed(CEntity* entity) {
+	return entity && (isSA() ? ((CEntitySA*)entity)->IsPed() : entity->IsPed());
+}
+
+inline void* EntityGetColModel(CEntity* entity) {
+	if (!entity)
+		return nil;
+	return isSA() ? ((CEntitySA*)entity)->GetColModel() : entity->GetColModel();
+}
+
+inline CVector EntityColModelSize(CEntity* entity) {
+	if (!entity)
+		return CVector(0.0f, 0.0f, 0.0f);
+
+	if (isSA()) {
+		CColModelSA* col = (CColModelSA*)EntityGetColModel(entity);
+		return col ? (col->boundingBox.max - col->boundingBox.min) : CVector(0.0f, 0.0f, 0.0f);
+	}
+	if (isVC()) {
+		CColModelVC* col = (CColModelVC*)EntityGetColModel(entity);
+		return col ? (col->boundingBox.max - col->boundingBox.min) : CVector(0.0f, 0.0f, 0.0f);
+	}
+	CColModelIII* col = (CColModelIII*)EntityGetColModel(entity);
+	return col ? (col->boundingBox.max - col->boundingBox.min) : CVector(0.0f, 0.0f, 0.0f);
+}
+
+static bool ModelNameLooksLikeCameraProp(const char* name) {
+	static const char* const keywords[] = {
+		"lamppost", "streetlight", "trafficlight", "trafficcone", "traffic",
+		"bollard", "pole", "hydrant", "bench", "mailbox", "newsstand",
+		"busstop", "shelter", "tree", "palm", "bush", "hedge", "plant",
+		"sign", "billboard", "fence", "railing", "barrier", "cone", "bin",
+		"trash", "rubbish", "dumpster", "phone", "atm", "wires"
+	};
+
+	char lower[24];
+	int length = 0;
+	for (; length < 23 && name[length]; ++length) {
+		char c = name[length];
+		if (c >= 'A' && c <= 'Z')
+			c = (char)(c + ('a' - 'A'));
+		lower[length] = c;
+	}
+	lower[length] = 0;
+
+	for (const char* keyword : keywords) {
+		if (strstr(lower, keyword))
+			return true;
+	}
+	return false;
+}
+
+// True when an SA model-name hash belongs to the generated camera-prop list
+// (street furniture, vegetation and barriers). Implemented in ModernCarCam.cpp.
+bool IsSACameraPropModelHash(uint32 hash);
+
+// True when a hit entity is a small street prop the free camera should pass
+// through. III/VC expose the model name; SA's CBaseModelInfo does not, so SA
+// uses the generated name-hash list first and the collision-box volume as a
+// fallback for custom models.
+inline bool EntityLooksLikeCameraProp(CEntity* entity) {
+	if (!entity)
+		return false;
+
+	if (!isSA()) {
+		CBaseModelInfo* modelInfo = CModelInfo::GetModelInfo(EntityGetModelIndex(entity));
+		return modelInfo ? ModelNameLooksLikeCameraProp(modelInfo->m_name) : false;
+	}
+
+	CBaseModelInfo* modelInfo = CModelInfo::GetModelInfo(EntityGetModelIndex(entity));
+	if (modelInfo && IsSACameraPropModelHash(*(uint32*)((addr)modelInfo + 0x4)))
+		return true;
+
+	const CVector size = EntityColModelSize(entity);
+	if (size.x <= 0.0f || size.y <= 0.0f || size.z <= 0.0f)
+		return false;
+	const float volume = size.x * size.y * size.z;
+	const float longest = max(size.x, max(size.y, size.z));
+	return volume <= 8.0f && longest <= 25.0f;
+}
+
+// Camera line of sight with the prop filter. skipProps is used for the free
+// camera and the side/look views and for the rear view when
+// CameraCollisionProps is off. Small props are stepped over so map geometry
+// behind them still blocks the camera; objects stay enabled here, because a
+// bridge/deck stored as a CObject must not be skipped (the old code disabled
+// checkObjects entirely, which let free look put the camera under it).
+template<class WorldClass>
+inline bool CameraProcessLineOfSight(const CVector& from, const CVector& to,
+	CColPoint& colPoint, CEntity*& entity, bool checkVehicles, bool skipProps,
+	bool ignoreSeeThrough, bool ignoreSomeObjects)
+{
+	// ignoreSomeObjects is deliberately not forwarded on the filtered path: on
+	// VC its true value makes the engine skip map objects, which is exactly the
+	// pass-through this helper is fixing. SA maps the same argument slot to
+	// ignoreCamera, which must stay false for camera collision. The unfiltered
+	// path keeps the VC caller's value so the normal rear view is unchanged.
+
+	if (!skipProps) {
+		return WorldClass::ProcessLineOfSight(from, to, colPoint, entity,
+			true, checkVehicles, false, true, false, ignoreSeeThrough,
+			isSA() ? false : ignoreSomeObjects);
+	}
+
+	CVector direction = to - from;
+	const float length = direction.Magnitude();
+	if (length < 0.001f)
+		return false;
+	direction = direction * (1.0f / length);
+
+	CVector start = from;
+	for (int i = 0; i < 16; ++i) {
+		if (!WorldClass::ProcessLineOfSight(start, to, colPoint, entity,
+			true, checkVehicles, false, true, false, ignoreSeeThrough, false))
+			return false;
+
+		if (!EntityLooksLikeCameraProp(entity))
+			return true;
+
+		start = colPoint.point + direction * 0.05f;
+	}
+	// Too many consecutive small props: still treat the last hit as a blocker,
+	// so the camera can never tunnel through a row of them.
+	return true;
+}
+
+// Keep the camera outside the player's own boat. The line-of-sight collision
+// deliberately ignores the camera's target vehicle (otherwise the normal car
+// camera would collide with the car it orbits), but a boat hull is large enough
+// that the camera can pass under it. The cam is pushed horizontally out of the
+// hull footprint while it is at or below deck height; above the deck it is left
+// alone.
+template<class VehicleClass, class ColModelClass>
+inline bool KeepCameraOutOfOwnBoat(VehicleClass* car, CVector& source) {
+	if (!car->IsBoat())
+		return false;
+
+	ColModelClass* col = (ColModelClass*)car->GetColModel();
+	if (!col)
+		return false;
+
+	const auto& box = col->boundingBox;
+	const CVector delta = source - car->GetPosition();
+	CVector local(
+		DotProduct(delta, car->GetRight()),
+		DotProduct(delta, car->GetForward()),
+		DotProduct(delta, car->GetUp()));
+
+	const float margin = 0.15f;
+	if (local.z > box.max.z + margin)
+		return false;
+	if (local.x < box.min.x - margin || local.x > box.max.x + margin)
+		return false;
+	if (local.y < box.min.y - margin || local.y > box.max.y + margin)
+		return false;
+
+	// Push out through the nearest side of the hull footprint. This also
+	// handles a camera that is already below the hull: it must not look up
+	// through the boat.
+	const float dxMin = local.x - (box.min.x - margin);
+	const float dxMax = (box.max.x + margin) - local.x;
+	const float dyMin = local.y - (box.min.y - margin);
+	const float dyMax = (box.max.y + margin) - local.y;
+
+	float best = dxMin;
+	float target = box.min.x - margin;
+	bool useX = true;
+	if (dxMax < best) { best = dxMax; target = box.max.x + margin; useX = true; }
+	if (dyMin < best) { best = dyMin; target = box.min.y - margin; useX = false; }
+	if (dyMax < best) { best = dyMax; target = box.max.y + margin; useX = false; }
+
+	if (useX)
+		local.x = target;
+	else
+		local.y = target;
+
+	source = car->GetPosition()
+		+ car->GetRight() * local.x
+		+ car->GetForward() * local.y
+		+ car->GetUp() * local.z;
+	return true;
+}
+
 // Height above the water surface the camera is held at when KeepCameraOverWater
 // is on. 0.5 matches the offset the III/VC engines already use, and keeps the
 // near plane from cutting into the surface.
@@ -587,6 +783,33 @@ inline bool IsMotorcycleVehicle(VehicleClass* car) {
 	return car->IsBike();
 }
 
+// True for a bicycle, including a modded bicycle that was registered with the
+// motorcycle type instead of VEHICLE_TYPE_BMX. The vanilla BMX (481), MTB
+// (510) and BMX chopper (509) are named bmx/mtbike/bike; their name hashes are
+// matched as a fallback so the traffic pass-by nudge can never fire on one.
+template<class VehicleClass>
+inline bool IsBicycleVehicle(VehicleClass* car) {
+	if (!car || !isSA() || !car->IsBike())
+		return false;
+
+	switch (car->m_modelIndex) {
+	case 481: // bmx
+	case 509: // bike (BMX chopper)
+	case 510: // mtbike
+		return true;
+	default:
+		break;
+	}
+
+	const addr mi = CModelInfo::GetModelInfoPtr(car->m_modelIndex);
+	if (!mi)
+		return false;
+	const uint32 key = *(uint32*)(mi + 0x4);
+	return key == 0x53C797CDu || // BMX
+	       key == 0x6B052BCDu || // MTBIKE
+	       key == 0x85D625CBu;   // BIKE
+}
+
 // ---------------------------------------------------------------------------
 // Shared maths helpers
 // ---------------------------------------------------------------------------
@@ -706,6 +929,18 @@ inline float CameraFreeLookReturnEase(float progress) {
 	return progress * progress * (3.0f - 2.0f * progress);
 }
 
+// How fast the free-look return advances for the current vehicle speed. At a
+// standstill the return is paused (the hold owns the angle); when pulling away
+// it starts gently and reaches the normal CameraReturnTime pace at about
+// 7 km/h. A look taken while already driving does not use this scale.
+constexpr float FreeLookReturnFullSpeed = 2.0f; // m/s
+inline float FreeLookReturnSpeedScale(float speed) {
+	if (speed <= 0.1f)
+		return 0.0f;
+	const float base = clamp((speed - 0.1f) / (FreeLookReturnFullSpeed - 0.1f), 0.7f, 1.0f);
+	return base * max(0.05f, cameraResetFromStop);
+}
+
 // Ease for one axis. In the default mode both axes use the same progress. In a
 // per-axis mode the total duration is shared according to the two time
 // multipliers, and only one axis moves at a time.
@@ -792,16 +1027,17 @@ struct CameraFreeLookReturn
 		targetAlpha = targetA;
 	}
 
-	// Advance by one frame and recompute both axis eases.
-	void Advance() {
-		if (!returning)
+	// Advance by one frame and recompute both axis eases. rateScale is the
+	// vehicle-speed factor: 0 holds the current angle, 1 is the normal pace.
+	void Advance(float rateScale = 1.0f) {
+		if (!returning || rateScale <= 0.0f)
 			return;
 
 		const bool verticalMoves = fabsf(targetAlpha - startAlpha) > 0.0001f;
 		const bool horizontalMoves =
 			fabsf(LimitRadianAngle(targetBeta - startBeta)) > 0.0001f;
 
-		progress += (ms_fTimeStep * TimeStepToSeconds) / CameraFreeLookReturnDuration();
+		progress += (ms_fTimeStep * TimeStepToSeconds) / CameraFreeLookReturnDuration() * rateScale;
 		betaEase = CameraFreeLookAxisEase(progress, false, verticalMoves, horizontalMoves);
 		alphaEase = CameraFreeLookAxisEase(progress, true, verticalMoves, horizontalMoves);
 	}

@@ -25,6 +25,10 @@ For Drive-by mods users:
 - When Manual Driveby Refixed is detected anywhere in the GTA San Andreas game folder,
   the side view is disabled by default (DisableSideView = Auto). Set it to 0 to override.
 
+Free look keeps the angle you left it at while the vehicle is stationary. When
+you pull away from a standstill the return rate follows your speed; a look taken
+while already driving returns at the normal pace.
+
 Sources
 -------
 - Source code and releases:

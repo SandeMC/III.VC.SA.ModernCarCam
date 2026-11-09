@@ -28,88 +28,6 @@ constexpr float BoatBetaSpeedDiffMult[3] = { 0.02f, 0.015f, 0.005f };
 constexpr float BoatWaterZAddition = 2.75f;
 constexpr float BoatMaxHeightUp = 15.0f;
 
-// --- Camera prop filtering -------------------------------------------------
-// III/VC model names are stored at +4 (after the vtable). Static map props such
-// as lampposts and traffic lights are sometimes CBuilding entities, so
-// checkObjects cannot exclude them. When CameraCollisionProps is off, skip hits
-// whose model name looks like street furniture and continue the ray.
-static bool ModelNameLooksLikeCameraProp(const char* name)
-{
-	static const char* const keywords[] = {
-		"lamppost", "streetlight", "trafficlight", "trafficcone", "traffic",
-		"bollard", "pole", "hydrant", "bench", "mailbox", "newsstand",
-		"busstop", "shelter", "tree", "palm", "bush", "hedge", "plant",
-		"sign", "billboard", "fence", "railing", "barrier", "cone", "bin",
-		"trash", "rubbish", "dumpster", "phone", "atm", "wires"
-	};
-
-	char lower[24];
-	int length = 0;
-	for (; length < 23 && name[length]; ++length) {
-		char c = name[length];
-		if (c >= 'A' && c <= 'Z')
-			c = (char)(c + ('a' - 'A'));
-		lower[length] = c;
-	}
-	lower[length] = 0;
-
-	for (const char* keyword : keywords) {
-		if (strstr(lower, keyword))
-			return true;
-	}
-	return false;
-}
-
-static bool EntityLooksLikeCameraProp(CEntity* entity)
-{
-	if (!entity || isSA())
-		return false;
-
-	addr modelInfo = CModelInfo::GetModelInfoPtr(entity->GetModelIndex());
-	if (!modelInfo)
-		return false;
-
-	char name[24];
-	memcpy(name, (void*)(modelInfo + 4), sizeof(name));
-	name[sizeof(name) - 1] = 0;
-	return ModelNameLooksLikeCameraProp(name);
-}
-
-// Camera line-of-sight with the prop filter applied. skipProps is used for the
-// free camera and every side/look view (they always ignored props) and for the
-// rear view when CameraCollisionProps is off. Objects are skipped by the engine
-// and any static prop hit is stepped over so buildings/map geometry behind it
-// still block the camera.
-template<class WorldClass>
-static bool CameraProcessLineOfSight(const CVector& from, const CVector& to,
-	CColPoint& colPoint, CEntity*& entity, bool checkVehicles, bool skipProps,
-	bool ignoreSeeThrough, bool ignoreSomeObjects)
-{
-	if (!skipProps) {
-		return WorldClass::ProcessLineOfSight(from, to, colPoint, entity,
-			true, checkVehicles, false, true, false, ignoreSeeThrough, ignoreSomeObjects);
-	}
-
-	CVector direction = to - from;
-	const float length = direction.Magnitude();
-	if (length < 0.001f)
-		return false;
-	direction = direction * (1.0f / length);
-
-	CVector start = from;
-	for (int i = 0; i < 8; ++i) {
-		if (!WorldClass::ProcessLineOfSight(start, to, colPoint, entity,
-			true, checkVehicles, false, false, false, ignoreSeeThrough, ignoreSomeObjects))
-			return false;
-
-		if (!EntityLooksLikeCameraProp(entity))
-			return true;
-
-		start = colPoint.point + direction * 0.05f;
-	}
-	return false;
-}
-
 // SA follow-camera near-plane collision pass. The vanilla engines used to rely
 // on the line clamp alone, which leaves the camera sitting on the surface it hit
 // and lets the near plane cut into walls (the view then shows the void). This
@@ -157,11 +75,12 @@ static void PushCameraOutOfNearGeometry(CVector& source, const CVector& target, 
 // trailing hold counts as held); the caller applies them to its own state.
 template<class CameraClass, class CamClass>
 static void ReadBoatFreeLookInput(CameraClass* TheCamera, CamClass* cam, CPad* pad,
-	int index, bool& freeLookHeld, float& betaDelta, float& alphaDelta)
+	int index, bool vehicleMoving, bool& freeLookHeld, float& betaDelta, float& alphaDelta)
 {
 	static float stepsLeftToChangeBetaByMouse = 0.0f;
 	static float smoothedStickX = 0.0f;
 	static float smoothedStickY = 0.0f;
+	bool inputThisFrame = false;
 
 	freeLookHeld = false;
 	betaDelta = 0.0f;
@@ -193,6 +112,7 @@ static void ReadBoatFreeLookInput(CameraClass* TheCamera, CamClass* cam, CPad* p
 		betaDelta += mouseX * lookScale * GetMouseAccel(TheCamera) * sensitivity;
 		stepsLeftToChangeBetaByMouse = 50.0f;
 		freeLookHeld = true;
+		inputThisFrame = true;
 	} else if (stepsLeftToChangeBetaByMouse > 0.0f) {
 		stepsLeftToChangeBetaByMouse = max(0.0f, stepsLeftToChangeBetaByMouse - ms_fTimeStep);
 		freeLookHeld = true;
@@ -231,6 +151,14 @@ static void ReadBoatFreeLookInput(CameraClass* TheCamera, CamClass* cam, CPad* p
 		alphaDelta -= yMovement * sensitivity;
 		stepsLeftToChangeBetaByMouse = 50.0f;
 		freeLookHeld = true;
+		inputThisFrame = true;
+	}
+
+	// A moving boat should not keep the trailing input hold; release starts the
+	// return immediately, as in the car engines.
+	if (vehicleMoving && !inputThisFrame && stepsLeftToChangeBetaByMouse > 0.0f) {
+		stepsLeftToChangeBetaByMouse = 0.0f;
+		freeLookHeld = false;
 	}
 }
 
@@ -485,11 +413,15 @@ Process_BehindBoat_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleClass* 
 	static int boatLookState = BoatLookIdle;
 	static float boatLookBetaSpeed = 0.0f;
 	static CameraFreeLookReturn freeLookReturn;
+	static bool boatLookHold = false;
+	static bool boatReturnSpeedScaled = false;
 
 	if (cam->ResetStatics) {
 		boatLookState = BoatLookIdle;
 		boatLookBetaSpeed = 0.0f;
 		freeLookReturn.Reset();
+		boatLookHold = false;
+		boatReturnSpeedScaled = false;
 		cam->Alpha = 0.0f;
 		cam->AlphaSpeed = 0.0f;
 	}
@@ -576,21 +508,43 @@ Process_BehindBoat_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleClass* 
 
 	bool freeLookHeld;
 	float lookBetaDelta, lookAlphaDelta;
-	ReadBoatFreeLookInput(TheCamera, cam, &pad0, 4,
+	const bool moving = car->m_vecMoveSpeed.Magnitude2D() > 0.1f;
+	ReadBoatFreeLookInput(TheCamera, cam, &pad0, 4, moving,
 		freeLookHeld, lookBetaDelta, lookAlphaDelta);
 
-	if (freeLookReturn.wasActive && !freeLookHeld)
+	const bool stationary = !moving;
+	if (freeLookHeld)
+		boatLookHold = false;
+	if (freeLookReturn.wasActive && !freeLookHeld) {
+		if (stationary && !sideOwnsBeta) {
+			boatLookHold = true;
+			boatReturnSpeedScaled = false;
+		} else {
+			boatLookHold = false;
+			freeLookReturn.Begin(cam->Beta, cam->Alpha, TargetWhenChecksWereOn, 0.0f);
+			boatReturnSpeedScaled = false;
+		}
+	}
+	if (boatLookHold && (!stationary || sideOwnsBeta)) {
+		boatLookHold = false;
 		freeLookReturn.Begin(cam->Beta, cam->Alpha, TargetWhenChecksWereOn, 0.0f);
+		boatReturnSpeedScaled = true;
+	}
 	freeLookReturn.wasActive = freeLookHeld;
-	if (freeLookHeld || sideOwnsBeta)
+	if (freeLookHeld || boatLookHold || sideOwnsBeta) {
+		boatReturnSpeedScaled = false;
 		freeLookReturn.Cancel();
-	freeLookReturn.Advance();
+	}
+	freeLookReturn.Advance(boatReturnSpeedScaled
+		? FreeLookReturnSpeedScale(car->m_vecMoveSpeed.Magnitude2D())
+		: 1.0f);
+	const bool lookOwns = freeLookHeld || boatLookHold;
 
 	if (freeLookHeld)
 		cam->Alpha = clamp(cam->Alpha + lookAlphaDelta, -BoatFreeLookPitchLimit, BoatFreeLookPitchLimit);
 	else if (freeLookReturn.returning)
 		cam->Alpha = freeLookReturn.Alpha();
-	else
+	else if (!boatLookHold)
 		cam->Alpha = 0.0f;
 	cam->AlphaSpeed = 0.0f;
 
@@ -601,12 +555,12 @@ Process_BehindBoat_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleClass* 
 		cam->LookingRight = pedAimCamera ? false : (boatLookState == BoatLookRight);
 	}
 
-	gFreeLookOwnsLR = sideEnabled || disableSideView || freeLookHeld || freeLookReturn.returning;
+	gFreeLookOwnsLR = sideEnabled || disableSideView || lookOwns || freeLookReturn.returning;
 
 	if (obscured) {
 		CEntity* entity = nil;
 		CameraProcessLineOfSight<WorldClass>(cam->Source, TargetCoors, colPoint, entity, false,
-			!cameraPropCollision || freeLookHeld || freeLookReturn.returning || sideOwnsBeta, true, true);
+			!cameraPropCollision || lookOwns || freeLookReturn.returning || sideOwnsBeta, true, true);
 		cam->Source = colPoint.point;
 		if (freeLookReturn.Finished()) {
 			cam->Alpha = 0.0f;
@@ -622,7 +576,7 @@ Process_BehindBoat_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleClass* 
 				boatLookState = BoatLookIdle;
 				boatLookBetaSpeed = 0.0f;
 			}
-		} else if (!freeLookHeld && !freeLookReturn.returning) {
+		} else if (!lookOwns && !freeLookReturn.returning) {
 			WellBufferMe(TargetWhenChecksWereOn, &cam->Beta, &cam->BetaSpeed, 0.07f, 0.015f, true);
 		}
 
@@ -663,7 +617,7 @@ Process_BehindBoat_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleClass* 
 	// backs into cannot be clipped through. Props are ignored for the free camera
 	// and the side view, as in the car engine.
 	PushCameraOutOfNearGeometry<WorldClass>(cam->Source, TargetCoors, cam->FOV, (CEntity*)car,
-		cameraPropCollision && !freeLookHeld && !freeLookReturn.returning && !sideOwnsBeta);
+		cameraPropCollision && !lookOwns && !freeLookReturn.returning && !sideOwnsBeta);
 
 	// Free-look pitch can point the boat camera downwards past the surface;
 	// KeepCameraOverWater still applies there (the normal placement already sits
@@ -698,11 +652,15 @@ Process_BehindBoat_VC(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, 
 	static int boatLookState = BoatLookIdle;
 	static float boatLookBetaSpeed = 0.0f;
 	static CameraFreeLookReturn freeLookReturn;
+	static bool boatLookHold = false;
+	static bool boatReturnSpeedScaled = false;
 
 	if (cam->ResetStatics) {
 		boatLookState = BoatLookIdle;
 		boatLookBetaSpeed = 0.0f;
 		freeLookReturn.Reset();
+		boatLookHold = false;
+		boatReturnSpeedScaled = false;
 	}
 
 	if (!car->IsVehicle()) {
@@ -774,21 +732,43 @@ Process_BehindBoat_VC(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, 
 
 	bool freeLookHeld;
 	float lookBetaDelta, lookAlphaDelta;
-	ReadBoatFreeLookInput(TheCamera, cam, &pad0, index,
+	const bool moving = car->m_vecMoveSpeed.Magnitude2D() > 0.1f;
+	ReadBoatFreeLookInput(TheCamera, cam, &pad0, index, moving,
 		freeLookHeld, lookBetaDelta, lookAlphaDelta);
 
-	if (freeLookReturn.wasActive && !freeLookHeld)
+	const bool stationary = !moving;
+	if (freeLookHeld)
+		boatLookHold = false;
+	if (freeLookReturn.wasActive && !freeLookHeld) {
+		if (stationary && !sideOwnsBeta) {
+			boatLookHold = true;
+			boatReturnSpeedScaled = false;
+		} else {
+			boatLookHold = false;
+			freeLookReturn.Begin(cam->Beta, cam->Alpha, TargetOrientation, targetAlpha);
+			boatReturnSpeedScaled = false;
+		}
+	}
+	if (boatLookHold && (!stationary || sideOwnsBeta)) {
+		boatLookHold = false;
 		freeLookReturn.Begin(cam->Beta, cam->Alpha, TargetOrientation, targetAlpha);
+		boatReturnSpeedScaled = true;
+	}
 	freeLookReturn.wasActive = freeLookHeld;
-	if (freeLookHeld || sideOwnsBeta)
+	if (freeLookHeld || boatLookHold || sideOwnsBeta) {
+		boatReturnSpeedScaled = false;
 		freeLookReturn.Cancel();
-	freeLookReturn.Advance();
+	}
+	freeLookReturn.Advance(boatReturnSpeedScaled
+		? FreeLookReturnSpeedScale(car->m_vecMoveSpeed.Magnitude2D())
+		: 1.0f);
+	const bool lookOwns = freeLookHeld || boatLookHold;
 
 	if (cam->ResetStatics) {
 		cam->Alpha = targetAlpha;
 		cam->AlphaSpeed = 0.0f;
 	}
-	if (!freeLookHeld && !freeLookReturn.returning)
+	if (!lookOwns && !freeLookReturn.returning)
 		WellBufferMe(targetAlpha, &cam->Alpha, &cam->AlphaSpeed, 0.15f, 0.07f, true);
 	if (freeLookHeld) {
 		cam->Alpha = clamp(cam->Alpha + lookAlphaDelta, -BoatFreeLookPitchLimit, BoatFreeLookPitchLimit);
@@ -811,7 +791,7 @@ Process_BehindBoat_VC(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, 
 			boatLookState = BoatLookIdle;
 			boatLookBetaSpeed = 0.0f;
 		}
-	} else if (!freeLookHeld && !freeLookReturn.returning) {
+	} else if (!lookOwns && !freeLookReturn.returning) {
 		WellBufferMe(TargetOrientation, &cam->Beta, &cam->BetaSpeed,
 			betaDiffMult * car->m_vecMoveSpeed.Magnitude(), betaSpeedDiffMult, true);
 	}
@@ -839,7 +819,7 @@ Process_BehindBoat_VC(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, 
 
 	// Swallow the game's native side snap while the mod look owns it, and always
 	// when the side view is disabled entirely.
-	gFreeLookOwnsLR = sideEnabled || disableSideView || freeLookHeld || freeLookReturn.returning;
+	gFreeLookOwnsLR = sideEnabled || disableSideView || lookOwns || freeLookReturn.returning;
 
 	cam->Source = (TheCamera->CarZoomValueSmooth + boatSize) * CVector(-cosf(cam->Beta), -sinf(cam->Beta), 0.0f) + TargetCoors;
 	cam->Source.z = WaterLevelBuffered + WATER_Z_ADDITION + (boatDimensions.z / 2.0f + MAX_HEIGHT_UP) * sinf(cam->Alpha);
@@ -849,7 +829,7 @@ Process_BehindBoat_VC(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, 
 	// AvoidTheGeometry: keep the camera out of the world (approximated with a
 	// line-of-sight clip, as in the mod's other camera paths).
 	{
-		const bool skipProps = !cameraPropCollision || freeLookHeld ||
+		const bool skipProps = !cameraPropCollision || lookOwns ||
 			freeLookReturn.returning || sideOwnsBeta;
 		pIgnoreEntity = (CEntity*)car;
 		CColPoint colPoint;
@@ -863,6 +843,10 @@ Process_BehindBoat_VC(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, 
 		// bridges or walls behind it.
 		PushCameraOutOfNearGeometry<WorldClass>(cam->Source, TargetCoors, cam->FOV,
 			(CEntity*)car, !skipProps);
+
+		// The line-of-sight above ignores the player's boat, so a low free-look
+		// pitch can put the camera under the hull. Push it out of the footprint.
+		KeepCameraOutOfOwnBoat<VehicleClass, ColModelClass>(car, cam->Source);
 	}
 
 	// Free-look pitch can point the boat camera downwards past the surface;
@@ -919,6 +903,16 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	static bool PreviousNearCheckNearClipSmall = false;
 	// Free-look return state: both axes share one smoothstep over CameraReturnTime.
 	static CameraFreeLookReturn freeLookReturn;
+	// Free look holds its angle and distance while the car is stationary; the
+	// auto-return starts only once the car moves. freeLookRadius is latched when
+	// the look starts so the string cannot jump to CA_MAX_DISTANCE (the reverse
+	// camera makes that jump very visible).
+	static bool freeLookHold = false;
+	static float freeLookRadius = -1.0f;
+	// Only a return from a look taken at a standstill is speed-scaled; a look
+	// taken while already driving keeps the normal pace.
+	static bool freeLookFromStandstill = false;
+	static bool freeLookSpeedScaled = false;
 	static float lastVanillaAlphaTarget = 0.0f;
 
 	gFreeLookOwnsLR = false;
@@ -1095,6 +1089,10 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 		stepsLeftToChangeBetaByMouse = 0.0f;
 		heightIncreaseMult = 0.0f;
 		freeLookReturn.Reset();
+		freeLookHold = false;
+		freeLookRadius = -1.0f;
+		freeLookFromStandstill = false;
+		freeLookSpeedScaled = false;
 		lastVanillaAlphaTarget = cam->Alpha;
 
 		if (TheCamera->m_bIdleOn)
@@ -1252,7 +1250,7 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 		modLookOwnsBeta = false;
 		modLookRadius = -1.0f;
 	}
-	if (mouseChangesBeta) {
+	if (mouseChangesBeta || freeLookHold) {
 		modLookReturning = false;
 		modLookBetaSpeed = 0.0f;
 		modLookOwnsBeta = false;
@@ -1293,47 +1291,86 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 		}
 	}
 
+	// While the car is moving, end the trailing 50-step input hold as soon as
+	// the mouse/stick stops; the return starts immediately.
+	const bool vehicleStationary = car->m_vecMoveSpeed.Magnitude2D() <= 0.1f;
+	if (stepsLeftToChangeBetaByMouse > 0.0f && !vehicleStationary)
+		stepsLeftToChangeBetaByMouse = 0.0f;
+	if (lookInputThisFrame && !freeLookReturn.wasActive)
+		freeLookFromStandstill = vehicleStationary;
+
 	// ---- Free-look return ----
-	// The stock 50-step input hold still applies before the return starts, so
-	// the default feel matches the earlier builds. Both axes use the same
-	// progress, or split it when a per-axis reset order is selected.
+	// The stock 50-step input hold still applies. After it, a stationary car
+	// keeps the looked angle (SA/newer-game behaviour); the return starts when
+	// the car moves. Both axes use the same progress, or split it when a
+	// per-axis reset order is selected.
 	const bool freeLookNow = mouseChangesBeta;
+	if (freeLookNow)
+		freeLookHold = false;
+
 	if (freeLookReturn.wasActive && !freeLookNow) {
-		// Freeze both destinations so the return cannot chase the live slope
-		// target (which itself depends on Beta) or the car's changing heading.
+		if (vehicleStationary && lookNow == 0 && !modLookActive) {
+			freeLookHold = true;
+			freeLookSpeedScaled = false;
+		} else {
+			freeLookHold = false;
+			// Freeze both destinations so the return cannot chase the live slope
+			// target (which itself depends on Beta) or the car's changing heading.
+			freeLookReturn.Begin(cam->Beta, cam->Alpha, TargetOrientation, lastVanillaAlphaTarget);
+			freeLookSpeedScaled = freeLookFromStandstill;
+		}
+	}
+	if (freeLookHold && (!vehicleStationary || lookNow != 0 || modLookActive)) {
+		freeLookHold = false;
 		freeLookReturn.Begin(cam->Beta, cam->Alpha, TargetOrientation, lastVanillaAlphaTarget);
+		freeLookSpeedScaled = freeLookFromStandstill;
 	}
 	freeLookReturn.wasActive = freeLookNow;
 	// A side look or the reverse swing owns the camera: let it have the angles.
-	if (freeLookNow || lookNow != 0 || modLookActive)
+	if (freeLookNow || freeLookHold || lookNow != 0 || modLookActive) {
+		freeLookSpeedScaled = false;
 		freeLookReturn.Cancel();
-	freeLookReturn.Advance();
+	}
+	freeLookReturn.Advance(freeLookSpeedScaled
+		? FreeLookReturnSpeedScale(car->m_vecMoveSpeed.Magnitude2D())
+		: 1.0f);
+	const bool freeLookOwns = freeLookNow || freeLookHold;
 
 	// While the mod's free camera (or its return) is driving the view, swallow
 	// the game's own left/right snap (see the look hooks). Aircraft yaw/rudder
 	// with the look-left/right keys, so swallow those for them too.
-	gFreeLookOwnsLR = mouseChangesBeta || disableSideLook || disableSideView || freeLookReturn.returning;
+	gFreeLookOwnsLR = freeLookOwns || disableSideLook || disableSideView || freeLookReturn.returning;
 
 	// ---- Basic string constraint (Cam_On_A_String_Unobscured) ----
 	// The string only constrains the distance to the target. The direction comes
 	// from Beta, which is derived from the current position unless the player is
 	// free-looking.
-	// While free-looking the distance is pinned to the zoom target so looking
-	// around can never change the zoom; otherwise the distance is the vanilla
-	// world-anchored string.
+	// While free-looking the distance is the distance the follow camera had when
+	// the look started: looking around can never change the zoom, and the camera
+	// does not pop out to CA_MAX_DISTANCE. It eases back to the live string
+	// length during the return.
 	float stringLength;
-	if (mouseChangesBeta) {
-		stringLength = cam->CA_MAX_DISTANCE;
+	float liveStringLength = (cam->Source - TargetCoors).Magnitude2D();
+	if (cam->ResetStatics)
+		liveStringLength = cam->CA_MAX_DISTANCE + 1.0f;
+	if (liveStringLength < 0.001f)
+		liveStringLength = cam->CA_MAX_DISTANCE;
+	if (liveStringLength > cam->CA_MAX_DISTANCE)
+		liveStringLength = cam->CA_MAX_DISTANCE;
+	else if (liveStringLength < cam->CA_MIN_DISTANCE)
+		liveStringLength = cam->CA_MIN_DISTANCE;
+
+	if (freeLookOwns) {
+		if (freeLookRadius < 0.0f)
+			freeLookRadius = liveStringLength;
+		stringLength = freeLookRadius;
+	} else if (freeLookReturn.returning && freeLookRadius > 0.0f) {
+		const float t = max(freeLookReturn.betaEase, freeLookReturn.alphaEase);
+		stringLength = freeLookRadius + (liveStringLength - freeLookRadius) * t;
 	} else {
-		stringLength = (cam->Source - TargetCoors).Magnitude2D();
-		if (cam->ResetStatics)
-			stringLength = cam->CA_MAX_DISTANCE + 1.0f;
-		if (stringLength < 0.001f)
-			stringLength = cam->CA_MAX_DISTANCE;
-		if (stringLength > cam->CA_MAX_DISTANCE)
-			stringLength = cam->CA_MAX_DISTANCE;
-		else if (stringLength < cam->CA_MIN_DISTANCE)
-			stringLength = cam->CA_MIN_DISTANCE;
+		stringLength = liveStringLength;
+		if (!freeLookReturn.returning)
+			freeLookRadius = -1.0f;
 	}
 	if (modLookActive) {
 		if (modLookRadius < 0.0f) {
@@ -1360,7 +1397,7 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 		modLookRadius = -1.0f;
 	}
 
-	if (!mouseChangesBeta && !freeLookReturn.returning)
+	if (!freeLookOwns && !freeLookReturn.returning)
 		cam->Beta = GetATanOfXY(TargetCoors.x - cam->Source.x, TargetCoors.y - cam->Source.y);
 
 	// Alpha follows the opposite convention to the SA camera (here a positive
@@ -1506,7 +1543,7 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 				targetAlpha = carAlpha;
 
 			lastVanillaAlphaTarget = targetAlpha;
-			if (!mouseChangesBeta && !freeLookReturn.returning) {
+			if (!freeLookOwns && !freeLookReturn.returning) {
 				if (isBike || isHeli)
 					WellBufferMe(targetAlpha, &cam->Alpha, &cam->AlphaSpeed, 0.09f, 0.04f, true);
 				else
@@ -1627,7 +1664,7 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 			}
 
 			lastVanillaAlphaTarget = LastTargetAlphaWithCollisionOn;
-			if (!mouseChangesBeta && !freeLookReturn.returning)
+			if (!freeLookOwns && !freeLookReturn.returning)
 				WellBufferMe(LastTargetAlphaWithCollisionOn, &cam->Alpha, &cam->AlphaSpeed, LastTopAlphaSpeed, LastAlphaSpeedStep, true);
 		}
 
@@ -1650,7 +1687,7 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	// horizontal radius shrinks as the camera rises; switching back to the
 	// cylinder placement while Alpha is still high made the camera jump
 	// outward and judder before the vertical reset.
-	if (mouseChangesBeta || freeLookReturn.returning) {
+	if (freeLookOwns || freeLookReturn.returning) {
 		const float (*angleTable)[15] = (anglesProfile == PROFILE_CUSTOM) ? CARCAM_SET_CUSTOM :
 			((anglesProfile == PROFILE_VANILLA) ? CARCAM_SET_VANILLA :
 			((anglesProfile == PROFILE_LCS) ? CARCAM_SET_LCS : CARCAM_SET_SA));
@@ -1733,7 +1770,7 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 			cam->LookingBehind = pedAimCamera ? false : (lookNow == 1);
 			cam->LookingLeft = pedAimCamera ? false : (lookNow == 2);
 			cam->LookingRight = pedAimCamera ? false : (lookNow == 3);
-		} else if ((cam->m_bFixingBeta || setBeta) && !mouseChangesBeta && !freeLookReturn.returning && !reverseLookActive && nextDirectionIsForward) {
+		} else if ((cam->m_bFixingBeta || setBeta) && !freeLookOwns && !freeLookReturn.returning && !reverseLookActive && nextDirectionIsForward) {
 			WellBufferMe(TargetOrientation, &cam->Beta, &cam->BetaSpeed, 0.15f * stiffness, 0.007f * stiffness, true);
 			if (TheCamera->m_bCamDirectlyBehind)
 				cam->Beta = TargetOrientation;
@@ -1755,7 +1792,7 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	TheCamera->m_bCamDirectlyInFront = false;
 
 	// ---- Reverse: smoothly swing round to look behind, and lock there ----
-	if (reverseLookActive && !mouseChangesBeta && !freeLookReturn.returning) {
+	if (reverseLookActive && !freeLookOwns && !freeLookReturn.returning) {
 		cam->BetaSpeed = 0.0f;
 		WellBufferMe(TargetOrientation + PI, &cam->Beta, &reverseBetaSpeed, 0.10f, 0.02f, true);
 		float d2 = (cam->Source - TargetCoors).Magnitude2D();
@@ -1786,7 +1823,7 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	// near plane in, and step the camera back out of any surface it is already
 	// intersecting.
 	{
-		const bool skipProps = !cameraPropCollision || mouseChangesBeta ||
+		const bool skipProps = !cameraPropCollision || freeLookOwns ||
 			modLookActive || modLookReturning || freeLookReturn.returning ||
 			reverseLookActive || lookNow != 0;
 		const bool checkProps = !skipProps;
@@ -1811,7 +1848,7 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	// Without this, resting the camera on the ground lets the near clip plane
 	// cut into it. SA shrinks the near clip plane in the same situation. Runs
 	// during a mod-driven look too, so the side view cannot dip into the ground.
-	if (mouseChangesBeta || modLookActive || freeLookReturn.returning) {
+	if (freeLookOwns || modLookActive || freeLookReturn.returning) {
 		bool foundGround = false;
 		const float groundZ = WorldClass::FindGroundZFor3DCoord(cam->Source.x, cam->Source.y, TargetCoors.z + 2.0f, &foundGround);
 		if (foundGround) {
@@ -1856,7 +1893,7 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 	// trafficCamWobble is a multiplier: 1.0 is the shipped gentle strength (70% of
 	// the raw amplitude), 0 = off.
 	float trafficWobbleTarget = 0.0f;
-	if (trafficCamWobble > 0.0f && (isCar || IsMotorcycleVehicle(car))) {
+	if (trafficCamWobble > 0.0f && !IsBicycleVehicle(car) && (isCar || IsMotorcycleVehicle(car))) {
 		const float kImpulseDuration = 0.3f;          // seconds, out and back
 		const float kImpulseAmplitude = 0.7f * 0.05f; // 70% of the raw 0.05 cap
 		static CEntity* trafficNearEntity = nil;      // vehicle whose pass-by already fired
@@ -1936,7 +1973,7 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 		cam->Up.Normalise();
 	} else {
 		float targetRoll = 0.0f;
-		if (cameraWobble > 0.0f && !mouseChangesBeta) {
+		if (cameraWobble > 0.0f && !freeLookOwns) {
 			float fwdSpeed = SpeedKphFactor * DotProduct(car->m_vecMoveSpeed, car->GetForward());
 			if (fwdSpeed > MaxForwardSpeed)
 				fwdSpeed = MaxForwardSpeed;

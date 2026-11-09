@@ -142,6 +142,14 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	static float slopeLastGroundTilt = 0.0f;  // last ground tilt, held through short hops
 	// Free-look return state: both axes share one smoothstep over CameraReturnTime.
 	static CameraFreeLookReturn freeLookReturn;
+	// True after the mouse look ends while the car is stationary. It holds the
+	// looked angles (and suppresses the normal follow) until the car moves.
+	static bool freeLookHold = false;
+	// True when the look that is being returned started while stationary. Only
+	// that "pulling away" return is speed-scaled; a look taken while already
+	// driving keeps the normal return pace.
+	static bool freeLookFromStandstill = false;
+	static bool freeLookSpeedScaled = false;
 
 	if (!cam->CamTargetEntity->IsVehicle())
 		return;
@@ -665,6 +673,9 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 		lookBetaSpeed = 0.0f;
 		lookReturnFrames = 0;
 		freeLookReturn.Reset();
+		freeLookHold = false;
+		freeLookFromStandstill = false;
+		freeLookSpeedScaled = false;
 		// Do not jump camPitchTilt to the raw slope target here: this branch also
 		// runs when returning from look left/right/behind, and the instant change
 		// read as the camera slamming to the top. The buffer above tracks the
@@ -1043,32 +1054,75 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 
 	// The vanilla Hydra/Andromada look owns the camera while a look key is held;
 	// drop any mod free-look return so the two do not fight on release.
-	if (nativeLookActive)
+	if (nativeLookActive || fpActive) {
 		freeLookReturn.Reset();
+		freeLookHold = false;
+		freeLookFromStandstill = false;
+		freeLookSpeedScaled = false;
+	}
 
-	// Ease back to the default camera angle after free look. The stock 50-step
-	// input hold still applies, so releasing the mouse leaves the looked angle
-	// in place briefly before the return, exactly like the previous builds.
+	// While a vehicle is moving there is no reason to keep the trailing 50-step
+	// input hold: it made the camera wait ~1 s before it even started to return.
+	// The moment the mouse/stick stops, the return takes over.
+	const bool vehicleStationary = car->m_vecMoveSpeed.Magnitude2D() <= 0.1f;
+	if (stepsLeftToChangeBetaByMouse > 0.0f && !vehicleStationary)
+		stepsLeftToChangeBetaByMouse = 0.0f;
+	if (lookInputThisFrame && !freeLookReturn.wasActive)
+		freeLookFromStandstill = vehicleStationary;
+
+	// Free look holds its angle while the car is stationary (SA/newer-game
+	// behaviour); the smooth return starts when the car moves. The stock
+	// 50-step input hold still applies before either happens.
 	const bool freeLookNow = mouseChangesBeta;
+	if (freeLookNow)
+		freeLookHold = false;
 	if (freeLookReturn.returning && freeLookNow)
 		freeLookReturn.Cancel();
 	if (freeLookReturn.wasActive && !freeLookNow) {
-		// Freeze the destination. followTargetBeta depends on cam->Front, and
-		// cam->Front depends on Beta, so chasing the live value during the
-		// return fed the changing angle back into the target and made the yaw
-		// stutter. The normal follow resumes from this angle next frame.
+		if (vehicleStationary && lookState == 0 && reverseState == 0) {
+			freeLookHold = true;
+			freeLookSpeedScaled = false;
+		} else {
+			freeLookHold = false;
+			// Freeze the destination. followTargetBeta depends on cam->Front, and
+			// cam->Front depends on Beta, so chasing the live value during the
+			// return fed the changing angle back into the target and made the yaw
+			// stutter. The normal follow resumes from this angle next frame.
+			freeLookReturn.Begin(cam->Beta, cam->Alpha, followTargetBeta, followTargetAlpha);
+			freeLookSpeedScaled = freeLookFromStandstill;
+		}
+	}
+	if (freeLookHold && (!vehicleStationary || lookState != 0 || reverseState != 0)) {
+		freeLookHold = false;
 		freeLookReturn.Begin(cam->Beta, cam->Alpha, followTargetBeta, followTargetAlpha);
+		freeLookSpeedScaled = freeLookFromStandstill;
 	}
 	freeLookReturn.wasActive = freeLookNow;
 
 	// A side look or the reverse swing owns the angles; cancel a pending
 	// free-look return instead of letting the two ease towards different targets.
-	if (lookState != 0 || reverseState != 0)
+	if (lookState != 0 || reverseState != 0) {
+		freeLookHold = false;
+		freeLookSpeedScaled = false;
 		freeLookReturn.Cancel();
+	}
 
-	freeLookReturn.Advance();
+	freeLookReturn.Advance(freeLookSpeedScaled
+		? FreeLookReturnSpeedScale(car->m_vecMoveSpeed.Magnitude2D())
+		: 1.0f);
+	const bool freeLookOwns = freeLookNow || freeLookHold;
 
-	if (correctAlpha) {
+	// While held, keep both angles and the look radius exactly where the player
+	// left them; the normal follow must not pull them back.
+	if (freeLookHold) {
+		xMovement = 0.0f;
+		yMovement = 0.0f;
+		targetAlpha = cam->Alpha;
+		cam->BetaSpeed = 0.0f;
+		cam->AlphaSpeed = 0.0f;
+	}
+
+	if (correctAlpha && !freeLookHold) {
 		if (previousMode != MODE_CAMONASTRING)
 			alphaCorrected = false;
 
@@ -1087,6 +1141,8 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 		targetBetaWithStickBlendAmount = -v117;
 	else if (targetBetaWithStickBlendAmount > v117)
 		targetBetaWithStickBlendAmount = v117;
+	if (freeLookHold)
+		targetBetaWithStickBlendAmount = 0.0f;
 
 	// Free look during a reverse takes Beta over: cancel the swing (both the
 	// look-behind swing, state 1, and its revert, state 2) so it cannot fight the
@@ -1119,7 +1175,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 		}
 	} else {
 		float angleChangeStepLeft = 1.0 - angleChangeStep;
-		if ((reverseState == 0 && lookState == 0) || mouseChangesBeta) {
+		if ((reverseState == 0 && lookState == 0) || freeLookOwns) {
 			cam->BetaSpeed = targetBetaWithStickBlendAmount * angleChangeStepLeft + angleChangeStep * cam->BetaSpeed;
 			if (fabsf(cam->BetaSpeed) < 0.0001f)
 				cam->BetaSpeed = 0.0f;
@@ -1127,6 +1183,8 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 			float v121;
 			if (mouseChangesBeta)
 				v121 = betaSpeedFromStickX;
+			else if (freeLookHold)
+				v121 = 0.0f;
 			else
 				v121 = ms_fTimeStep * cam->BetaSpeed;
 			cam->Beta = v121 + cam->Beta;
@@ -1141,7 +1199,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 		else if (cam->Beta > PI)
 			cam->Beta -= TWOPI;
 
-		if ((camSetArrPos <= 1 || (distanceProfile == PROFILE_LCS && camSetArrPos == 7)) && targetAlpha < cam->Alpha && carPosChange >= newDistance) {
+		if ((camSetArrPos <= 1 || (distanceProfile == PROFILE_LCS && camSetArrPos == 7)) && targetAlpha < cam->Alpha && carPosChange >= newDistance && !freeLookHold) {
 			if (isCar && GetWheelsOnGround(car) > 1 ||
 				isBike && GetMysteriousWheelRelatedThingBike(car) > 1)
 				alphaSpeedFromStickY += (targetAlpha - cam->Alpha) * 0.075f;
@@ -1166,7 +1224,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 		if (fabsf(cam->AlphaSpeed) < 0.0001f)
 			cam->AlphaSpeed = 0.0f;
 
-		if (mouseChangesBeta)
+		if (mouseChangesBeta || freeLookHold)
 		{
 			alphaWithSpeedAccounted = alphaSpeedFromStickY + targetAlpha;
 			cam->Alpha += alphaSpeedFromStickY;
@@ -1194,18 +1252,28 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// axis's changing limit. The default both-axis return keeps the old clamp.
 	if (lookState == 0 && (!freeLookReturn.returning || cameraResetOrder == 0))
 	{
-		if (cam->Alpha <= maxAlphaAllowed)
+		// During free look, use the SA free-look pitch limit rather than the
+		// selected profile's follow-camera limit. The LCS boat row ends at -0.2,
+		// which is correct for the LCS follow camera but reads as an invisible
+		// barrier when the player lowers the mod's free camera; SA's boat row
+		// (0.349) lets the view continue down to the water. MaxPitch still wins
+		// when the user sets it explicitly.
+		const bool lookOwns = freeLookOwns || freeLookReturn.returning;
+		const float alphaMax = (maxPitchAngle >= 0.0f) ? maxPitchAngle :
+			(lookOwns ? CARCAM_SET_SA[camSetArrPos][13] : maxAlphaAllowed);
+		const float alphaMin = -((minPitchAngle >= 0.0f) ? minPitchAngle :
+			(lookOwns ? CARCAM_SET_SA[camSetArrPos][14] : CARCAM_SET[camSetArrPos][14]));
+		if (cam->Alpha <= alphaMax)
 		{
-			float minAlphaAllowed = -((minPitchAngle >= 0.0f) ? minPitchAngle : CARCAM_SET[camSetArrPos][14]);
-			if (minAlphaAllowed > cam->Alpha)
+			if (alphaMin > cam->Alpha)
 			{
-				cam->Alpha = minAlphaAllowed;
+				cam->Alpha = alphaMin;
 				cam->AlphaSpeed = 0.0;
 			}
 		}
 		else
 		{
-			cam->Alpha = maxAlphaAllowed;
+			cam->Alpha = alphaMax;
 			cam->AlphaSpeed = 0.0;
 		}
 	}
@@ -1372,7 +1440,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// trafficCamWobble is a multiplier: 1.0 is the shipped gentle strength (70% of
 	// the raw amplitude), 0 = off.
 	float trafficWobbleTarget = 0.0f;
-	if (trafficCamWobble > 0.0f && (isCar || IsMotorcycleVehicle(car))) {
+	if (trafficCamWobble > 0.0f && !IsBicycleVehicle(car) && (isCar || IsMotorcycleVehicle(car))) {
 		const float kImpulseDuration = 0.3f;          // seconds, out and back
 		const float kImpulseAmplitude = 0.7f * 0.05f; // 70% of the raw 0.05 cap
 		static CEntity* trafficNearEntity = nil;      // vehicle whose pass-by already fired
@@ -1509,10 +1577,9 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 
 	// SA runs SetColVarsVehicle here, which cannot be called safely from the mod,
 	// so the LCS FollowCar / SA FollowPedWithMouse collision detection is used
-	// instead. It now runs during a look too, so the side view gets the same
-	// collision the follow camera has. The look owns Beta and its distance is a
-	// separate value (newDistance), so the clamp cannot feed back into either.
-	if (nextDirectionIsForward || lookState != 0) {
+	// instead. It now runs for every frame, not only the forward follow: a mouse
+	// look or a held angle must not be able to put the camera through the world.
+	{
 		// Move the camera out of any collision.
 		float v206 = powf(0.99, ms_fTimeStep);
 		flt_9BF250 = (v206 * flt_9BF250) + ((1.0f - v206) * car->m_vecMoveSpeed.Magnitude());
@@ -1522,14 +1589,15 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 		pIgnoreEntity = (CEntity*)cam->CamTargetEntity;
 		// The free camera and every look/side view have always ignored props;
 		// CameraCollisionProps only changes the normal rear view.
-		const bool skipProps = !cameraPropCollision || mouseChangesBeta ||
+		const bool skipProps = !cameraPropCollision || freeLookOwns ||
 			lookState != 0 || freeLookReturn.returning || reverseState != 0;
 		const bool checkProps = !skipProps;
-		if (WorldClass::ProcessLineOfSight(TargetCoors, cam->Source, foundCol, foundEnt, true, checkProps && flt_9BF250 < 0.1f, false, checkProps, false, true, false))
+		if (CameraProcessLineOfSight<WorldClass>(TargetCoors, cam->Source, foundCol, foundEnt,
+			checkProps && flt_9BF250 < 0.1f, skipProps, true, !skipProps))
 		{
 			float obstacleTargetDist = (TargetCoors - foundCol.point).Magnitude();
 			float obstacleCamDist = newDistance - obstacleTargetDist;
-			if (!foundEnt->IsPed() || obstacleCamDist <= 1.0f)
+			if (!EntityIsPed(foundEnt) || obstacleCamDist <= 1.0f)
 			{
 				cam->Source = foundCol.point;
 				cam->Distance = obstacleTargetDist;
@@ -1541,7 +1609,8 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 			}
 			else
 			{
-				if (!WorldClass::ProcessLineOfSight(foundCol.point, cam->Source, foundCol, foundEnt, true, checkProps && flt_9BF250 < 0.1f, false, checkProps, false, true, false))
+				if (!CameraProcessLineOfSight<WorldClass>(foundCol.point, cam->Source, foundCol, foundEnt,
+					checkProps && flt_9BF250 < 0.1f, skipProps, true, !skipProps))
 				{
 					float lessClip = obstacleCamDist - 0.35f;
 					if (lessClip <= 0.9f)
@@ -1565,13 +1634,27 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 			}
 		}
 		pIgnoreEntity = nil;
+
+		// The camera's target vehicle is ignored by the line above, which is
+		// right for cars but leaves the camera free to go under a boat hull.
+		if (KeepCameraOutOfOwnBoat<VehicleClass, ColModelClass>(car, cam->Source)) {
+			cam->Distance = (TargetCoors - cam->Source).Magnitude();
+			cam->DistanceSpeed = 0.0f;
+			cam->Front = TargetCoors - cam->Source;
+			cam->Front.Normalise();
+		}
+
 		float nearClip = GetNearPlane();
 		float radius = tanf(cam->FOV * 0.017453292f * 0.5f) * GetAspectRatio() * 1.1f;
 
 		// If the camera intersects a surface the view can see through the world;
-		// nudge the camera out. SA and LCS unroll this loop.
+		// nudge the camera out. SA and LCS unroll this loop. The target vehicle
+		// is ignored while the mod owns the look (and for boats), otherwise a
+		// close free-look camera is pushed around by its own bike/car.
+		const bool lookOwns = freeLookOwns || freeLookReturn.returning;
+		CEntity* nearPlaneIgnore = (lookOwns || car->IsBoat()) ? (CEntity*)car : nil;
 		for (int i = 0;
-			i <= 5 && WorldClass::TestSphereAgainstWorld((nearClip * cam->Front) + cam->Source, radius * nearClip, nil, true, checkProps, false, checkProps, false, false);
+			i <= 5 && WorldClass::TestSphereAgainstWorld((nearClip * cam->Front) + cam->Source, radius * nearClip, nearPlaneIgnore, true, checkProps, false, checkProps, false, false);
 			i++) {
 
 			CVector surfaceCamDist = ms_testSpherePoint.point - cam->Source;
@@ -1590,6 +1673,22 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 
 			nearClip = GetNearPlane();
 			radius = tanf(cam->FOV * 0.017453292f * 0.5f) * GetAspectRatio() * 1.1f;
+		}
+
+		// Last-resort ground clamp for the mod-owned look. Only rescue a camera
+		// that is actually below the ground, and only when the found ground is
+		// below the car: in a multi-level garage FindGroundZFor3DCoord can return
+		// the floor above (the ceiling) and lifting the camera to it was the
+		// "stuck" camera inside the structure.
+		if (freeLookOwns || freeLookReturn.returning || lookState != 0) {
+			bool foundGround = false;
+			const float groundZ = WorldClass::FindGroundZFor3DCoord(cam->Source.x, cam->Source.y, TargetCoors.z + 2.0f, &foundGround);
+			if (foundGround && groundZ < TargetCoors.z - 0.1f && cam->Source.z < groundZ) {
+				cam->Source.z = groundZ + 0.05f;
+				const float clearance = cam->Source.z - groundZ;
+				if (clearance < DefaultNearClip)
+					RwCameraSetNearClipPlane(RwCamera, max(0.05f, clearance - 0.05f));
+			}
 		}
 	}
 

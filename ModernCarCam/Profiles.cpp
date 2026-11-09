@@ -168,6 +168,7 @@ void applyProfile(ModernProfile profile, bool vc) {
 	cameraPropCollision = true;        // collide with props (lampposts, cars) as before
 	cameraResetOrder = 0;              // both axes return together
 	cameraResetTime = 1.0f;            // 1.0 = the existing return duration
+	cameraResetFromStop = 1.0f;        // pull-away return rate multiplier
 	cameraResetVerticalTime = 1.0f;    // equal per-axis shares when a per-axis mode is selected
 	cameraResetHorizontalTime = 1.0f;
 	keyboardFreeLook = sa;             // keyboard drives the free camera in SA (native), not in III/VC
