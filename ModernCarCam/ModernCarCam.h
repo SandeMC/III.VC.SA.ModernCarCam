@@ -603,17 +603,14 @@ inline bool CameraProcessLineOfSight(const CVector& from, const CVector& to,
 	return true;
 }
 
-// Keep the camera outside the player's own boat. The line-of-sight collision
-// deliberately ignores the camera's target vehicle (otherwise the normal car
-// camera would collide with the car it orbits), but a boat hull is large enough
-// that the camera can pass under it. The cam is pushed horizontally out of the
-// hull footprint while it is at or below deck height; above the deck it is left
-// alone.
+// Keep the camera outside the player's own vehicle. The line-of-sight collision
+// deliberately ignores the camera's target vehicle (otherwise the normal
+// camera would collide with the car it orbits), but free look can put the
+// camera under the car, inside the hull or right against the glass. The cam is
+// pushed horizontally out of the vehicle's footprint while it is at or below
+// body height; above the roof it is left alone.
 template<class VehicleClass, class ColModelClass>
-inline bool KeepCameraOutOfOwnBoat(VehicleClass* car, CVector& source) {
-	if (!car->IsBoat())
-		return false;
-
+inline bool KeepCameraOutOfOwnVehicle(VehicleClass* car, CVector& source) {
 	ColModelClass* col = (ColModelClass*)car->GetColModel();
 	if (!col)
 		return false;
@@ -659,6 +656,21 @@ inline bool KeepCameraOutOfOwnBoat(VehicleClass* car, CVector& source) {
 		+ car->GetUp() * local.z;
 	return true;
 }
+
+// Keep the camera below a low ceiling. The line-of-sight clamp can leave the
+// camera sitting on the ceiling slab (looking along it) in garages and tunnels;
+// lowering it under the roof keeps the car in view.
+template<class WorldClass>
+inline bool KeepCameraBelowRoof(CVector& source, const CVector& target, float clearance = 0.2f) {
+	bool found = false;
+	const float roofZ = WorldClass::FindRoofZFor3DCoord(source.x, source.y, target.z + 0.1f, &found);
+	if (!found || source.z <= roofZ - clearance)
+		return false;
+	source.z = roofZ - clearance;
+	return true;
+}
+
+// Keep a little clearance above the ground and pull the near plane in.
 
 // Height above the water surface the camera is held at when KeepCameraOverWater
 // is on. 0.5 matches the offset the III/VC engines already use, and keeps the

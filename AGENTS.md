@@ -71,8 +71,15 @@ still pending (no game install is used by the agent):
 - LCS/VCS boat free-look uses the SA pitch limit, not the LCS follow limit;
 - free-look collision checks map objects with a small-prop filter (III/VC by
   model name, SA by generated name-hash list plus a size fallback), always runs,
-  and has a conservative ground clamp; own-boat hull collision pushes the camera
-  out; the near-plane sphere ignores the player's own vehicle during free look;
+  and has a conservative ground clamp; the own-vehicle footprint push now
+  applies to cars, bikes, boats and aircraft; the near-plane sphere ignores the
+  player's own vehicle during free look;
+- the vanilla follow string no longer collapses toward the car when it moves
+  toward the camera (that was the VC-table windscreen approach);
+- `PitchTilt = 0` is authoritative and disables both slope-tilt directions even
+  when `PitchTiltUphill`/`Downhill` are set; profile defaults are untouched;
+- a roof clamp lowers the camera under a low ceiling instead of leaving it on
+  the slab;
 - traffic pass-by wobble is for cars/motorcycles only; `IsBicycleVehicle`
   explicitly excludes the BMX/MTB ids and names even if a mod types one as a
   motorcycle;

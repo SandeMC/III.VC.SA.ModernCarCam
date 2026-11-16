@@ -854,9 +854,9 @@ Process_BehindBoat_VC(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, 
 		PushCameraOutOfNearGeometry<WorldClass>(cam->Source, TargetCoors, cam->FOV,
 			(CEntity*)car, !skipProps);
 
-		// The line-of-sight above ignores the player's boat, so a low free-look
-		// pitch can put the camera under the hull. Push it out of the footprint.
-		KeepCameraOutOfOwnBoat<VehicleClass, ColModelClass>(car, cam->Source);
+		// The line-of-sight above ignores the player's own vehicle, so a low
+		// free-look angle can put the camera under the hull or into the body.
+		KeepCameraOutOfOwnVehicle<VehicleClass, ColModelClass>(car, cam->Source);
 	}
 
 	// Free-look pitch can point the boat camera downwards past the surface;
@@ -1548,6 +1548,12 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 		// keys override it per direction (<0 = use the master value).
 		float tiltUphill = (pitchTiltUphill >= 0.0f) ? pitchTiltUphill : pitchTilt;
 		float tiltDownhill = (pitchTiltDownhill >= 0.0f) ? pitchTiltDownhill : pitchTilt;
+		// Master switch wins: PitchTilt = 0 disables both directions even
+		// when the per-direction multipliers are explicitly set.
+		if (pitchTilt <= 0.0f) {
+			tiltUphill = 0.0f;
+			tiltDownhill = 0.0f;
+		}
 		bool tiltEnabled = tiltUphill > 0.0f || tiltDownhill > 0.0f;
 
 		if (vc) {
@@ -1889,6 +1895,15 @@ Process_Cam_On_A_String_Vanilla(CameraClass* TheCamera, CamClass* cam, VehicleCl
 
 		PushCameraOutOfNearGeometry<WorldClass>(cam->Source, TargetCoors, cam->FOV,
 			(CEntity*)car, checkProps);
+
+		// The line-of-sight ignores the player's own vehicle. Free look can put
+		// the camera inside it or under it; push it out of the body footprint.
+		if (KeepCameraOutOfOwnVehicle<VehicleClass, ColModelClass>(car, cam->Source))
+			cam->Distance = (TargetCoors - cam->Source).Magnitude();
+
+		// Keep the camera under a low ceiling instead of on top of it.
+		if (KeepCameraBelowRoof<WorldClass>(cam->Source, TargetCoors))
+			cam->Distance = (TargetCoors - cam->Source).Magnitude();
 	}
 
 	// ---- Keep a little clearance above the ground and pull the near plane in ----

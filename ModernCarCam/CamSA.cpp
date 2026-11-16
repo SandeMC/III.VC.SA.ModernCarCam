@@ -418,7 +418,6 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	}
 
 	float newDistance;
-	float minDistForThisCar;
 	if (distanceProfile == PROFILE_VANILLA) {
 		CVector dimensions = carCol->boundingBox.max - carCol->boundingBox.min;
 		float baseDist = dimensions.Magnitude();
@@ -431,7 +430,6 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 			else if (!isReLCS && car->m_modelIndex == MI_VC_RCBARON)
 				newDistance += 9.5f;
 		}
-		minDistForThisCar = min(baseDist * 0.6f, 3.5f);
 	} else {
 		float perVehOffset = CARCAM_SET[camSetArrPos][1];
 		float genericOffset = CARCAM_SET[0][1];
@@ -444,11 +442,7 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 			} else
 				newDistance += 6.0f;
 		}
-		minDistForThisCar = approxCarLength * CARCAM_SET[camSetArrPos][3];
 	}
-
-	if (cameraMinDistance >= 0.0f)
-		minDistForThisCar = cameraMinDistance;
 
 	if (elasticStringPhysics > 0.0f && (isCar || isBike || car->IsBoat())) {
 		float forwardSpeed = DotProduct(car->m_vecMoveSpeed, car->GetForward()) * SpeedKphFactor;
@@ -496,6 +490,12 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	// vehicle's nose so the camera lines up with the car while jumping.
 	float uphillStrength = (pitchTiltUphill >= 0.0f) ? pitchTiltUphill : pitchTilt;
 	float downhillStrength = (pitchTiltDownhill >= 0.0f) ? pitchTiltDownhill : pitchTilt;
+	// The master switch is authoritative: PitchTilt = 0 disables both
+	// directions even if the per-direction multipliers are still set.
+	if (pitchTilt <= 0.0f) {
+		uphillStrength = 0.0f;
+		downhillStrength = 0.0f;
+	}
 	bool tiltEnabled = uphillStrength > 0.0f || downhillStrength > 0.0f;
 
 	float targetSlopeTilt = 0.0f;
@@ -799,16 +799,11 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 	const float followTargetBeta = targetBeta;
 
 	float carPosChange = (TargetCoors - m_aTargetHistoryPosTwo).Magnitude();
-	if (carPosChange < newDistance && newDistance > minDistForThisCar) {
-		// Do not let the follow string collapse onto the car when the car moves
-		// toward the camera while the player rotates it: the vanilla-table
-		// minimum (3.5 m) ends up right against the windscreen. Keep at least
-		// the car's own length between the target and the camera, clamped so
-		// this can never push the camera farther out than its current distance.
-		float shrinkFloor = max(minDistForThisCar, approxCarLength);
-		shrinkFloor = min(shrinkFloor, newDistance);
-		newDistance = max(shrinkFloor, carPosChange);
-	}
+	// The vanilla follow string used to collapse newDistance to carPosChange
+	// when the car moved toward the camera. While the player rotated the view
+	// that made the camera slide toward the windscreen (the VC-table update is
+	// very visible). The distance now stays at the selected profile distance;
+	// the collision code still pulls the camera in when a wall is in the way.
 	float maxAlphaAllowed = (maxPitchAngle >= 0.0f) ? maxPitchAngle : ANGLES_CARCAM_SET[camSetArrPos][13];
 
 	// Raise the pitch limit so the camera cannot clip into the car when it is
@@ -1646,8 +1641,9 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 		pIgnoreEntity = nil;
 
 		// The camera's target vehicle is ignored by the line above, which is
-		// right for cars but leaves the camera free to go under a boat hull.
-		if (KeepCameraOutOfOwnBoat<VehicleClass, ColModelClass>(car, cam->Source)) {
+		// right for normal follow distances but lets free look push the camera
+		// under or into the car/bike. Push it out of the body footprint.
+		if (KeepCameraOutOfOwnVehicle<VehicleClass, ColModelClass>(car, cam->Source)) {
 			cam->Distance = (TargetCoors - cam->Source).Magnitude();
 			cam->DistanceSpeed = 0.0f;
 			cam->Front = TargetCoors - cam->Source;
@@ -1700,6 +1696,11 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 					RwCameraSetNearClipPlane(RwCamera, max(0.05f, clearance - 0.05f));
 			}
 		}
+
+		// A low ceiling used to leave the camera sitting on the slab, looking
+		// along it. Put it under the roof instead; the car stays in view.
+		if (KeepCameraBelowRoof<WorldClass>(cam->Source, TargetCoors))
+			cam->Distance = (TargetCoors - cam->Source).Magnitude();
 	}
 
 	// ---- LCS-specific clamps ----

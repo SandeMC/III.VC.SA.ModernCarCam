@@ -59,7 +59,7 @@ IV is an approximation of IVs feel applied on top of the SA camera; its exact di
 - Configurable dynamic speed FOV (ported from ThirteenAG's Widescreen Fix)
 - Configurable Vice City Stories camera shake (ported from ThirteenAG's Widescreen Fix)
 - Configurable Steering wobble from Vice City
-- Configurable terrain pitch tilt, with a new option to also apply the tilt when going upwards and several adjustments made to how it works;
+- Configurable terrain pitch tilt, with a new option to also apply the tilt when going upwards and several adjustments made to how it works; `PitchTilt = 0` disables both directions even when the per-direction multipliers are set;
 - Per-vehicle zoom from Vice City as an option
 - Bike passenger height option
 - Elastic string stretch from San Andreas as an option
