@@ -603,6 +603,38 @@ inline bool CameraProcessLineOfSight(const CVector& from, const CVector& to,
 	return true;
 }
 
+// Radius of the sphere SA's CCamera::CameraColDetAndReact sweeps from the
+// target to the camera in the vehicle modes. The sphere scales with the
+// fraction of the line that is clear, so the vanilla camera keeps about
+// 0.65 * fraction metres from what it hit.
+constexpr float CameraHitClearanceRadius = 0.65f;
+
+// Where to put the camera after the target-to-camera line of sight hit the
+// world. Placing it exactly on the hit point leaves zero clearance: on a
+// downhill the rising road behind the car (or a wall when reversing) then sits
+// right at the camera and the near plane can cut through it. The segment from
+// the target to the hit point is known to be clear, so the camera is moved back
+// along it, which can never put it into geometry.
+// The pull is the along-the-line equivalent of the vanilla sphere: solving
+// dist = hitDist - r * dist / lineLength gives r * hitDist / (lineLength + r),
+// so a hit 1 m from the target only moves the camera about 0.1 m. It is also
+// limited to half of how far the surface cut into the line, so it ramps in
+// from zero as an obstacle starts to touch the camera instead of popping the
+// camera forward on the first hit frame.
+// Only for engines that rebuild the camera position every frame (CamSA.cpp):
+// the III/VC string camera reads the previous Source back as its string
+// length, and the pull would make it alternate between two distances.
+inline CVector CameraPointClearOfHit(const CVector& target, const CVector& hitPoint, float lineLength) {
+	const CVector toHit = hitPoint - target;
+	const float hitDist = toHit.Magnitude();
+	if (hitDist < 0.001f || lineLength <= hitDist)
+		return hitPoint;
+
+	float pull = CameraHitClearanceRadius * hitDist / (lineLength + CameraHitClearanceRadius);
+	pull = min(pull, 0.5f * (lineLength - hitDist));
+	return target + toHit * ((hitDist - pull) / hitDist);
+}
+
 // Keep the camera outside the player's own vehicle. The line-of-sight collision
 // deliberately ignores the camera's target vehicle (otherwise the normal
 // camera would collide with the car it orbits), but free look can put the
