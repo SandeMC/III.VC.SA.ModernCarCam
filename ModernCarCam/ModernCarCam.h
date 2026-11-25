@@ -660,13 +660,35 @@ inline bool KeepCameraOutOfOwnVehicle(VehicleClass* car, CVector& source) {
 // Keep the camera below a low ceiling. The line-of-sight clamp can leave the
 // camera sitting on the ceiling slab (looking along it) in garages and tunnels;
 // lowering it under the roof keeps the car in view.
+//
+// The roof probe starts at the camera's x/y at the target's height. Driving
+// downhill, the road behind the car is above that point, so the probe starts
+// inside the hill and returns the road surface as the "roof" (the engine's line
+// test is two-sided). A wall, bank or quay rising above the target behind the
+// car does the same. Clamping to such a surface buried the camera under the road,
+// looking up at the car. So the clamp is only applied when the target can see
+// both the probe start and the clamped position through the geometry the roof
+// probe tests (buildings and dummies): under a real garage, tunnel or bridge
+// ceiling they are in the same open space as the target, inside a hill or
+// behind a wall they are not. Either one alone missed single frames on uneven
+// slopes in testing. The extra tests only run on frames where the clamp would
+// otherwise fire.
 template<class WorldClass>
 inline bool KeepCameraBelowRoof(CVector& source, const CVector& target, float clearance = 0.2f) {
+	const CVector probeStart(source.x, source.y, target.z + 0.1f);
 	bool found = false;
-	const float roofZ = WorldClass::FindRoofZFor3DCoord(source.x, source.y, target.z + 0.1f, &found);
+	const float roofZ = WorldClass::FindRoofZFor3DCoord(probeStart.x, probeStart.y, probeStart.z, &found);
 	if (!found || source.z <= roofZ - clearance)
 		return false;
-	source.z = roofZ - clearance;
+	const CVector clamped(source.x, source.y, roofZ - clearance);
+	// See-through surfaces (glass, fences) are ignored so they cannot cancel a
+	// real ceiling clamp.
+	if (!WorldClass::GetIsLineOfSightClear(target, probeStart,
+		true, false, false, false, true, true, false) ||
+		!WorldClass::GetIsLineOfSightClear(target, clamped,
+		true, false, false, false, true, true, false))
+		return false;
+	source = clamped;
 	return true;
 }
 
