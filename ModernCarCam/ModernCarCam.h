@@ -603,6 +603,38 @@ inline bool CameraProcessLineOfSight(const CVector& from, const CVector& to,
 	return true;
 }
 
+// Radius of the sphere SA's CCamera::CameraColDetAndReact sweeps from the
+// target to the camera in the vehicle modes. The sphere scales with the
+// fraction of the line that is clear, so the vanilla camera keeps about
+// 0.65 * fraction metres from what it hit.
+constexpr float CameraHitClearanceRadius = 0.65f;
+
+// Where to put the camera after the target-to-camera line of sight hit the
+// world. Placing it exactly on the hit point leaves zero clearance: on a
+// downhill the rising road behind the car (or a wall when reversing) then sits
+// right at the camera and the near plane can cut through it. The segment from
+// the target to the hit point is known to be clear, so the camera is moved back
+// along it, which can never put it into geometry.
+// The pull is the along-the-line equivalent of the vanilla sphere: solving
+// dist = hitDist - r * dist / lineLength gives r * hitDist / (lineLength + r),
+// so a hit 1 m from the target only moves the camera about 0.1 m. It is also
+// limited to half of how far the surface cut into the line, so it ramps in
+// from zero as an obstacle starts to touch the camera instead of popping the
+// camera forward on the first hit frame.
+// Only for engines that rebuild the camera position every frame (CamSA.cpp):
+// the III/VC string camera reads the previous Source back as its string
+// length, and the pull would make it alternate between two distances.
+inline CVector CameraPointClearOfHit(const CVector& target, const CVector& hitPoint, float lineLength) {
+	const CVector toHit = hitPoint - target;
+	const float hitDist = toHit.Magnitude();
+	if (hitDist < 0.001f || lineLength <= hitDist)
+		return hitPoint;
+
+	float pull = CameraHitClearanceRadius * hitDist / (lineLength + CameraHitClearanceRadius);
+	pull = min(pull, 0.5f * (lineLength - hitDist));
+	return target + toHit * ((hitDist - pull) / hitDist);
+}
+
 // Keep the camera outside the player's own vehicle. The line-of-sight collision
 // deliberately ignores the camera's target vehicle (otherwise the normal
 // camera would collide with the car it orbits), but free look can put the
@@ -660,13 +692,35 @@ inline bool KeepCameraOutOfOwnVehicle(VehicleClass* car, CVector& source) {
 // Keep the camera below a low ceiling. The line-of-sight clamp can leave the
 // camera sitting on the ceiling slab (looking along it) in garages and tunnels;
 // lowering it under the roof keeps the car in view.
+//
+// The roof probe starts at the camera's x/y at the target's height. Driving
+// downhill, the road behind the car is above that point, so the probe starts
+// inside the hill and returns the road surface as the "roof" (the engine's line
+// test is two-sided). A wall, bank or quay rising above the target behind the
+// car does the same. Clamping to such a surface buried the camera under the road,
+// looking up at the car. So the clamp is only applied when the target can see
+// both the probe start and the clamped position through the geometry the roof
+// probe tests (buildings and dummies): under a real garage, tunnel or bridge
+// ceiling they are in the same open space as the target, inside a hill or
+// behind a wall they are not. Either one alone missed single frames on uneven
+// slopes in testing. The extra tests only run on frames where the clamp would
+// otherwise fire.
 template<class WorldClass>
 inline bool KeepCameraBelowRoof(CVector& source, const CVector& target, float clearance = 0.2f) {
+	const CVector probeStart(source.x, source.y, target.z + 0.1f);
 	bool found = false;
-	const float roofZ = WorldClass::FindRoofZFor3DCoord(source.x, source.y, target.z + 0.1f, &found);
+	const float roofZ = WorldClass::FindRoofZFor3DCoord(probeStart.x, probeStart.y, probeStart.z, &found);
 	if (!found || source.z <= roofZ - clearance)
 		return false;
-	source.z = roofZ - clearance;
+	const CVector clamped(source.x, source.y, roofZ - clearance);
+	// See-through surfaces (glass, fences) are ignored so they cannot cancel a
+	// real ceiling clamp.
+	if (!WorldClass::GetIsLineOfSightClear(target, probeStart,
+		true, false, false, false, true, true, false) ||
+		!WorldClass::GetIsLineOfSightClear(target, clamped,
+		true, false, false, false, true, true, false))
+		return false;
+	source = clamped;
 	return true;
 }
 

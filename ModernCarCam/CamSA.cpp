@@ -1600,11 +1600,16 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 		if (CameraProcessLineOfSight<WorldClass>(TargetCoors, cam->Source, foundCol, foundEnt,
 			checkProps && flt_9BF250 < 0.1f, skipProps, true, !skipProps))
 		{
+			// Length of the line that was tested (the lateral offset makes it
+			// differ from newDistance). The camera is placed short of the hit
+			// point along it so it does not sit on the surface.
+			const float losLength = (cam->Source - TargetCoors).Magnitude();
 			float obstacleTargetDist = (TargetCoors - foundCol.point).Magnitude();
 			float obstacleCamDist = newDistance - obstacleTargetDist;
 			if (!EntityIsPed(foundEnt) || obstacleCamDist <= 1.0f)
 			{
-				cam->Source = foundCol.point;
+				cam->Source = CameraPointClearOfHit(TargetCoors, foundCol.point, losLength);
+				obstacleTargetDist = (TargetCoors - cam->Source).Magnitude();
 				cam->Distance = obstacleTargetDist;
 				cam->DistanceSpeed = 0.0f;
 				if (obstacleTargetDist < 1.2f)
@@ -1623,8 +1628,8 @@ Process_FollowCar_SA(CameraClass* TheCamera, CamClass* cam, VehicleClass* car, c
 					else
 						RwCameraSetNearClipPlane(RwCamera, 0.9f);
 				} else {
-					obstacleTargetDist = (TargetCoors - foundCol.point).Magnitude();
-					cam->Source = foundCol.point;
+					cam->Source = CameraPointClearOfHit(TargetCoors, foundCol.point, losLength);
+					obstacleTargetDist = (TargetCoors - cam->Source).Magnitude();
 					cam->Distance = obstacleTargetDist;
 					cam->DistanceSpeed = 0.0f;
 					if (obstacleTargetDist < 1.2f)
